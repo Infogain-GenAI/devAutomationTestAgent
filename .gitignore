@@ -1,0 +1,112 @@
+# ═══════════════════════════════════════════
+# IGNIS Test Agent - .gitignore
+# ═══════════════════════════════════════════
+
+# ── Node.js ───────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.npm
+.yarn-integrity
+
+# ── Environment & Secrets ─────────────────
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+*.pem
+*.key
+*.p12
+
+# ── Playwright Test Results ──────────────
+test-results/
+playwright-report/
+playwright/.cache/
+traces/
+screenshots/
+videos/
+test-results.json
+
+# ── Generated Tests ───────────────────────
+generated-tests/
+
+# ── Reports & Logs ────────────────────────
+logs/
+*.log
+reports/
+*.md.backup
+
+# ── Workspace (Cloned Repositories) ───────
+workspace/
+.workspace/
+temp/
+tmp/
+
+# ── Build & Distribution ──────────────────
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# ── Database ──────────────────────────────
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# ── IDE & Editor ──────────────────────────
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.AppleDouble
+.LSOverride
+Desktop.ini
+
+# ── Coverage ──────────────────────────────
+coverage/
+*.lcov
+.nyc_output
+
+# ── OS Files ──────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ── Docker ────────────────────────────────
+*.dockerignore.backup
+
+# ── Package Manager Locks (Optional) ──────
+# Uncomment if you want to ignore lock files
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# ── TypeScript ────────────────────────────
+*.tsbuildinfo
+
+# ── Misc ──────────────────────────────────
+.cache/
+*.pid
+*.seed
+*.pid.lock
+.eslintcache
+.stylelintcache
+
+# ── Keep Example Files ────────────────────
+!.env.example
+!config/*.example.json
+!**/.gitkeep
