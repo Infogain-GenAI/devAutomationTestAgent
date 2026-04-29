@@ -1,0 +1,81 @@
+name: 'IGNIS Automation Test Agent'
+description: 'AI-powered automation testing for YOUR repository — generates tests, runs them, fixes issues, creates PRs'
+author: 'IGNIS'
+
+inputs:
+  branch:
+    description: 'Branch to test (the base branch for fix PRs)'
+    required: false
+    default: 'main'
+  ai-provider:
+    description: 'AI provider (claude, openai, gemini)'
+    required: false
+    default: 'claude'
+  ai-api-key:
+    description: 'API key for the AI provider'
+    required: true
+  max-iterations:
+    description: 'Maximum fix-and-retest iterations'
+    required: false
+    default: '3'
+  test-types:
+    description: 'Comma-separated test types (e2e, api, visual, accessibility, performance)'
+    required: false
+    default: 'e2e,api,visual,accessibility,performance'
+  app-url:
+    description: 'URL of the running target application (skip auto-start)'
+    required: false
+  auto-start-app:
+    description: 'Auto-start the target app from the repo'
+    required: false
+    default: 'true'
+  app-start-command:
+    description: 'Custom command to start the target app'
+    required: false
+  tech-stack-override:
+    description: 'JSON string to override tech stack detection'
+    required: false
+  app-secrets:
+    description: 'JSON string of environment variables for the target app'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout repository (same repo)
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.branch }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Install IGNIS agent dependencies
+      shell: bash
+      run: npm ci
+      working-directory: ${{ github.action_path }}
+
+    - name: Install Playwright browsers
+      shell: bash
+      run: npx playwright install --with-deps chromium
+      working-directory: ${{ github.action_path }}
+
+    - name: Run IGNIS Automation Test Agent
+      shell: bash
+      run: node src/cli.js
+      working-directory: ${{ github.action_path }}
+      env:
+        REPO_PATH: ${{ github.workspace }}
+        REPO_BRANCH: ${{ inputs.branch }}
+        AI_PROVIDER: ${{ inputs.ai-provider }}
+        AI_API_KEY: ${{ inputs.ai-api-key }}
+        MAX_ITERATIONS: ${{ inputs.max-iterations }}
+        TEST_TYPES: ${{ inputs.test-types }}
+        APP_URL: ${{ inputs.app-url }}
+        AUTO_START_APP: ${{ inputs.auto-start-app }}
+        APP_START_COMMAND: ${{ inputs.app-start-command }}
+        TECH_STACK_OVERRIDE: ${{ inputs.tech-stack-override }}
+        APP_SECRETS: ${{ inputs.app-secrets }}
+        GITHUB_TOKEN: ${{ github.token }}

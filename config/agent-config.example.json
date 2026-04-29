@@ -1,0 +1,29 @@
+{
+  "agent": {
+    "maxIterations": 3,
+    "timeoutMinutes": 30,
+    "branch": "main"
+  },
+  "ai": {
+    "provider": "claude",
+    "claude": {
+      "model": "claude-sonnet-4-20250514"
+    },
+    "openai": {
+      "model": "gpt-4-turbo"
+    },
+    "gemini": {
+      "model": "gemini-1.5-pro"
+    }
+  },
+  "testing": {
+    "types": ["e2e", "api", "visual", "accessibility", "performance"],
+    "browsers": ["chromium"],
+    "headless": true
+  },
+  "app": {
+    "autoStart": true,
+    "startCommand": null,
+    "url": null
+  }
+}

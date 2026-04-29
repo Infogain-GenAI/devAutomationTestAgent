@@ -1,0 +1,173 @@
+{
+  "backend": {
+    "endpoint_validation": {
+      "description": "Validate backend API endpoints for common issues and security vulnerabilities",
+      "checks": [
+        "Input validation and sanitization",
+        "Authentication and authorization mechanisms",
+        "SQL injection vulnerabilities",
+        "Cross-Site Scripting (XSS) prevention",
+        "CSRF token implementation",
+        "Rate limiting and throttling",
+        "Error handling and logging",
+        "API versioning strategy",
+        "Response status codes consistency",
+        "Data validation schemas",
+        "Database query optimization",
+        "Memory leaks and resource cleanup",
+        "Proper use of async/await patterns",
+        "Environment variable usage",
+        "Secrets management",
+        "CORS configuration",
+        "API documentation completeness"
+      ],
+      "prompt_template": "Analyze the following backend endpoint code and identify any issues related to: security vulnerabilities, best practices violations, performance concerns, error handling, and code quality. Provide specific recommendations with code examples.\n\nEndpoint: {{endpoint_path}}\nMethod: {{http_method}}\nCode:\n{{code_content}}\n\nAnalyze for:\n{{checks_list}}"
+    },
+    "best_practices": {
+      "description": "Check backend code against industry best practices",
+      "rules": [
+        "RESTful API design principles",
+        "Proper HTTP method usage (GET, POST, PUT, DELETE, PATCH)",
+        "Consistent naming conventions (camelCase, snake_case, kebab-case)",
+        "Separation of concerns (controllers, services, models)",
+        "Dependency injection patterns",
+        "Configuration management",
+        "Logging and monitoring implementation",
+        "Error response standardization",
+        "Data transfer object (DTO) usage",
+        "Business logic separation from routes",
+        "Database transaction management",
+        "Connection pooling",
+        "Caching strategies",
+        "Middleware usage and ordering",
+        "Request/Response validation middleware",
+        "API gateway patterns",
+        "Microservices communication patterns"
+      ],
+      "prompt_template": "Review the following backend code against industry best practices. Identify violations and suggest improvements:\n\nFile: {{file_path}}\nCode:\n{{code_content}}\n\nCheck against these best practices:\n{{rules_list}}\n\nProvide:\n1. Issues found\n2. Severity (critical, high, medium, low)\n3. Recommended fixes with code examples\n4. Root cause analysis"
+    },
+    "code_quality": {
+      "description": "Assess overall code quality metrics",
+      "metrics": [
+        "Code complexity (cyclomatic complexity)",
+        "Function length and single responsibility",
+        "Code duplication (DRY principle)",
+        "Comment quality and documentation",
+        "Variable and function naming clarity",
+        "Magic numbers and hardcoded values",
+        "Dead code and unused imports",
+        "Proper use of constants and enums",
+        "Type safety and type definitions",
+        "Error handling completeness",
+        "Test coverage gaps",
+        "Code organization and structure"
+      ],
+      "prompt_template": "Evaluate the code quality of the following file:\n\nFile: {{file_path}}\nCode:\n{{code_content}}\n\nAssess these quality metrics:\n{{metrics_list}}\n\nProvide:\n1. Quality score (0-100)\n2. Critical issues\n3. Refactoring recommendations\n4. Code smell detection"
+    }
+  },
+  "frontend": {
+    "component_validation": {
+      "description": "Validate frontend components for best practices",
+      "checks": [
+        "Component structure and composition",
+        "Props validation and typing",
+        "State management patterns",
+        "Side effects handling (useEffect, lifecycle)",
+        "Accessibility (ARIA labels, keyboard navigation)",
+        "Performance optimization (memoization, lazy loading)",
+        "Error boundaries implementation",
+        "Form validation",
+        "API call patterns",
+        "Loading and error states",
+        "Responsive design implementation",
+        "CSS/styling best practices",
+        "XSS prevention in rendered content",
+        "Key props in lists",
+        "Conditional rendering patterns"
+      ],
+      "prompt_template": "Analyze the following frontend component:\n\nComponent: {{component_name}}\nCode:\n{{code_content}}\n\nValidate against:\n{{checks_list}}\n\nProvide specific issues and fixes."
+    },
+    "ui_best_practices": {
+      "description": "Check frontend code against UI/UX best practices",
+      "rules": [
+        "User feedback mechanisms (loading spinners, success/error messages)",
+        "Consistent UI component library usage",
+        "Proper form field labels and validation messages",
+        "Mobile-first responsive design",
+        "Browser compatibility considerations",
+        "SEO meta tags and semantic HTML",
+        "Image optimization and lazy loading",
+        "Bundle size optimization",
+        "Code splitting strategies",
+        "Progressive enhancement",
+        "Graceful degradation",
+        "Client-side routing patterns",
+        "State persistence strategies"
+      ],
+      "prompt_template": "Review frontend code for UI/UX best practices:\n\nFile: {{file_path}}\nCode:\n{{code_content}}\n\nCheck these practices:\n{{rules_list}}"
+    }
+  },
+  "general": {
+    "security_audit": {
+      "description": "Comprehensive security audit across the codebase",
+      "vulnerabilities": [
+        "Injection attacks (SQL, NoSQL, Command)",
+        "Broken authentication",
+        "Sensitive data exposure",
+        "XML external entities (XXE)",
+        "Broken access control",
+        "Security misconfiguration",
+        "Cross-Site Scripting (XSS)",
+        "Insecure deserialization",
+        "Using components with known vulnerabilities",
+        "Insufficient logging and monitoring",
+        "CSRF vulnerabilities",
+        "Clickjacking",
+        "Open redirects",
+        "Information disclosure",
+        "Business logic flaws"
+      ],
+      "prompt_template": "Perform a security audit on this code:\n\nFile: {{file_path}}\nCode:\n{{code_content}}\n\nCheck for these vulnerabilities:\n{{vulnerabilities_list}}\n\nProvide:\n1. Vulnerability description\n2. Severity (CVSS score if applicable)\n3. Proof of concept\n4. Remediation steps with code"
+    },
+    "performance_analysis": {
+      "description": "Identify performance bottlenecks and optimization opportunities",
+      "areas": [
+        "Database query optimization (N+1 queries, missing indexes)",
+        "Memory leaks",
+        "Inefficient algorithms",
+        "Synchronous operations blocking event loop",
+        "Large payload sizes",
+        "Missing caching layers",
+        "Unoptimized loops and iterations",
+        "Resource cleanup (connections, file handles)",
+        "Bundle size and code splitting",
+        "Render performance (React re-renders)",
+        "Network request optimization",
+        "Image and asset optimization"
+      ],
+      "prompt_template": "Analyze performance of this code:\n\nFile: {{file_path}}\nCode:\n{{code_content}}\n\nIdentify issues in:\n{{areas_list}}\n\nProvide:\n1. Bottleneck description\n2. Impact assessment\n3. Optimization approach\n4. Expected improvement"
+    }
+  },
+  "report": {
+    "summary_sections": [
+      "Executive Summary",
+      "Analysis Overview",
+      "Critical Issues",
+      "Security Vulnerabilities",
+      "Performance Concerns",
+      "Best Practices Violations",
+      "Code Quality Metrics",
+      "Recommendations",
+      "Fixes Applied",
+      "Test Results",
+      "Root Cause Analysis"
+    ],
+    "severity_levels": {
+      "critical": "Immediate attention required - security vulnerability or system-breaking issue",
+      "high": "Should be fixed soon - significant impact on functionality or security",
+      "medium": "Should be addressed - moderate impact on code quality or performance",
+      "low": "Nice to have - minor improvements or style issues",
+      "info": "Informational - suggestions for enhancement"
+    }
+  }
+}

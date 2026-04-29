@@ -1,0 +1,28 @@
+# Example: Add this workflow to YOUR repository to use IGNIS
+
+name: IGNIS Automated Testing
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to test'
+        default: 'main'
+
+jobs:
+  auto-test:
+    # Call the IGNIS reusable workflow
+    # Replace <org> with your GitHub organization name
+    uses: <org>/ignis-test-agent/.github/workflows/ignis-testing.yml@main
+    with:
+      branch: ${{ github.event.inputs.branch || github.ref_name }}
+      ai-provider: claude
+      max-iterations: 3
+      test-types: e2e,api,accessibility
+      auto-start-app: true
+    secrets:
+      ai-api-key: ${{ secrets.AI_API_KEY }}

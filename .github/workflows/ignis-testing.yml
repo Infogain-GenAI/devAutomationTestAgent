@@ -1,0 +1,112 @@
+name: IGNIS Automation Testing
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        type: string
+        description: 'Branch to test (default: main)'
+        default: 'main'
+      ai-provider:
+        type: string
+        description: 'AI provider (claude, openai, gemini)'
+        default: 'claude'
+      max-iterations:
+        type: number
+        description: 'Maximum fix-and-retest iterations'
+        default: 3
+      test-types:
+        type: string
+        description: 'Comma-separated test types'
+        default: 'e2e,api,visual,accessibility,performance'
+      app-url:
+        type: string
+        description: 'URL of the running target application'
+        required: false
+      auto-start-app:
+        type: boolean
+        description: 'Auto-start the target app from the repo'
+        default: true
+      app-start-command:
+        type: string
+        description: 'Custom command to start the target app'
+        required: false
+      enable-backend-validation:
+        type: boolean
+        description: 'Enable backend endpoint validation'
+        default: true
+      enable-best-practices:
+        type: boolean
+        description: 'Enable best practices checking'
+        default: true
+      generate-report:
+        type: boolean
+        description: 'Generate comprehensive analysis report'
+        default: true
+    secrets:
+      ai-api-key:
+        required: true
+      app-secrets:
+        required: false
+
+jobs:
+  ignis-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Checkout IGNIS agent
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/ignis-test-agent
+          path: .ignis-agent
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install agent dependencies
+        run: npm ci
+        working-directory: .ignis-agent
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run IGNIS Automation Test Agent
+        run: node .ignis-agent/src/cli.js
+        env:
+          REPO_PATH: ${{ github.workspace }}
+          REPO_BRANCH: ${{ inputs.branch }}
+          AI_PROVIDER: ${{ inputs.ai-provider }}
+          AI_API_KEY: ${{ secrets.ai-api-key }}
+          MAX_ITERATIONS: ${{ inputs.max-iterations }}
+          TEST_TYPES: ${{ inputs.test-types }}
+          APP_URL: ${{ inputs.app-url }}
+          AUTO_START_APP: ${{ inputs.auto-start-app }}
+          APP_START_COMMAND: ${{ inputs.app-start-command }}
+          APP_SECRETS: ${{ secrets.app-secrets }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ENABLE_BACKEND_VALIDATION: ${{ inputs.enable-backend-validation }}
+          ENABLE_BEST_PRACTICES_CHECK: ${{ inputs.enable-best-practices }}
+          ENABLE_ENDPOINT_VALIDATION: ${{ inputs.enable-backend-validation }}
+          GENERATE_ANALYSIS_REPORT: ${{ inputs.generate-report }}
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ignis-test-results
+          path: |
+            generated-tests/
+            test-results/
+            playwright-report/
+            reports/
+            logs/
