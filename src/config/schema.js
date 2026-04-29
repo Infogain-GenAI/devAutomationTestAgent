@@ -35,7 +35,7 @@ const configSchema = Joi.object({
   }).default(),
 
   ai: Joi.object({
-    provider: Joi.string().valid('claude', 'openai', 'gemini').default('claude'),
+    provider: Joi.string().valid('claude', 'openai', 'gemini').default('openai'),
     claude: Joi.object({
       apiKey: Joi.string().allow(null, ''),
       model: Joi.string().default('claude-sonnet-4-20250514')

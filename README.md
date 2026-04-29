@@ -23,6 +23,18 @@ The IGNIS Automation Test Agent is an intelligent, fully-automated testing solut
 ✅ **Iterative Fixing** — Auto-fixes failing tests up to configurable max iterations  
 ✅ **Comprehensive Reports** — Markdown reports with executive summaries and RCA  
 
+### 🤖 AI Provider Support
+
+**✅ Works with OpenAI, Claude, and Gemini — Claude is NOT required!**
+
+- **OpenAI** (GPT-4, GPT-4o, GPT-4-turbo) — Recommended
+- **Google Gemini** (1.5 Pro, 1.5 Flash) — Most cost-effective
+- **Anthropic Claude** (Sonnet 4, Opus 3) — Premium option
+
+Simply set `AI_PROVIDER=openai` in your configuration. No code changes needed.
+
+📖 **[OpenAI Setup Guide](./OPENAI-QUICK-SETUP.md)** | **[Full Compatibility Analysis](./OPENAI-COMPATIBILITY-ANALYSIS.md)**  
+
 ## ✨ Features (v2.0)
 
 ### 🔒 Backend Endpoint Validation
@@ -83,7 +95,12 @@ The IGNIS Automation Test Agent is an intelligent, fully-automated testing solut
 - **Git**
 - **Docker** (optional, for containerized deployment)
 - **GitHub Personal Access Token** or **GitHub App credentials**
-- **AI Provider API Key** (Claude, OpenAI, or Gemini)
+- **AI Provider API Key** — Choose ONE:
+  - **OpenAI** (Recommended) — https://platform.openai.com/api-keys
+  - **Google Gemini** (Most Cost-Effective) — https://makersuite.google.com/app/apikey
+  - **Anthropic Claude** (Premium) — https://console.anthropic.com/
+
+> **💡 Note:** You only need ONE AI provider API key. OpenAI is recommended for the best balance of quality and cost. Claude is NOT required.
 
 ### Local Installation
 
@@ -102,7 +119,10 @@ npx playwright install --with-deps chromium
 cp .env.example .env
 
 # 5. Edit .env with your credentials
-# Add your GITHUB_TOKEN, AI_API_KEY, and other required variables
+# For OpenAI (recommended):
+#   AI_PROVIDER=openai
+#   OPENAI_API_KEY=sk-proj-xxxxxxxxxxxx
+#   GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 
 # 6. Validate setup
 npm run validate
@@ -154,8 +174,24 @@ Create a `.env` file in the root directory with the following variables:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `CLAUDE_API_KEY` | Anthropic Claude API key | `sk-ant-xxxxxxxxxxxx` |
-| `OPENAI_API_KEY` | OpenAI API key | `sk-xxxxxxxxxxxx` |
-| `GEMINI_API_KEY` | Google Gemini API key | `AIzaxxxxxxxxxxxx` |
+| `OPENAI_API_KEY` | OpenAI API key (recommended) | `sk-xxxxxxxxxxxx` |
+| `GEMINI_API_KEY` | Google Gemini API key (most cost-effective) | `AIzaxxxxxxxxxxxx` |
+| `CLAUDE_MODEL` | Override default Claude model | `claude-sonnet-4-20250514` |
+| `OPENAI_MODEL` | Override default OpenAI model | `gpt-4o` or `gpt-4-turbo` |
+| `GEMINI_MODEL` | Override default Gemini model | `gemini-1.5-pro` |
+
+**💡 Quick Setup for OpenAI:**
+```bash
+AI_PROVIDER=openai
+OPENAI_API_KEY=sk-proj-xxxxxxxxxxxx
+```
+
+**💰 Cost Comparison (per 1M tokens):**
+- **Gemini 1.5 Pro:** $1.25 input / $5.00 output (cheapest)
+- **OpenAI GPT-4o:** $2.50 input / $10.00 output (balanced)
+- **Claude Sonnet 4:** $3.00 input / $15.00 output (premium)
+
+📖 See [OPENAI-QUICK-SETUP.md](./OPENAI-QUICK-SETUP.md) for detailed setup guide.
 
 #### 🔧 Agent Configuration
 

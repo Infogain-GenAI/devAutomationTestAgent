@@ -2,10 +2,16 @@
 
 const path = require('path');
 
+// Helper function to safely parse integers
+const parseIntSafe = (value, defaultValue) => {
+  const parsed = parseInt(value, 10);
+  return !isNaN(parsed) ? parsed : defaultValue;
+};
+
 const defaults = {
   agent: {
-    maxIterations: parseInt(process.env.MAX_ITERATIONS, 10) || 3,
-    timeoutMinutes: parseInt(process.env.AGENT_TIMEOUT_MINUTES, 10) || 30,
+    maxIterations: parseIntSafe(process.env.MAX_ITERATIONS, 3),
+    timeoutMinutes: parseIntSafe(process.env.AGENT_TIMEOUT_MINUTES, 30),
     workDir: process.env.AGENT_WORK_DIR || path.join(process.cwd(), 'workspace'),
     branch: process.env.REPO_BRANCH || 'main',
     fixBranchPrefix: process.env.FIX_BRANCH_PREFIX || 'ignis/fix',
@@ -24,7 +30,7 @@ const defaults = {
     installationId: process.env.GITHUB_INSTALLATION_ID
   },
   ai: {
-    provider: process.env.AI_PROVIDER || 'claude',
+    provider: process.env.AI_PROVIDER || 'openai',
     claude: {
       apiKey: process.env.CLAUDE_API_KEY || process.env.AI_API_KEY,
       model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514'
@@ -47,11 +53,11 @@ const defaults = {
     autoStart: process.env.AUTO_START_APP === 'true',
     startCommand: process.env.APP_START_COMMAND || null,
     url: process.env.APP_URL || null,
-    port: parseInt(process.env.APP_PORT, 10) || null
+    port: process.env.APP_PORT ? parseIntSafe(process.env.APP_PORT, null) : null
   },
   database: {
     host: process.env.POSTGRES_HOST || 'localhost',
-    port: parseInt(process.env.POSTGRES_PORT, 10) || 5432,
+    port: parseIntSafe(process.env.POSTGRES_PORT, 5432),
     name: process.env.POSTGRES_DB || 'ignis_agent',
     user: process.env.POSTGRES_USER || 'postgres',
     password: process.env.POSTGRES_PASSWORD || ''
