@@ -10,7 +10,7 @@ inputs:
   ai-provider:
     description: 'AI provider (claude, openai, gemini)'
     required: false
-    default: 'claude'
+    default: 'openai'
   ai-api-key:
     description: 'API key for the AI provider'
     required: true
@@ -71,6 +71,9 @@ runs:
         REPO_BRANCH: ${{ inputs.branch }}
         AI_PROVIDER: ${{ inputs.ai-provider }}
         AI_API_KEY: ${{ inputs.ai-api-key }}
+        OPENAI_API_KEY: ${{ inputs.ai-api-key }}
+        CLAUDE_API_KEY: ${{ inputs.ai-api-key }}
+        GEMINI_API_KEY: ${{ inputs.ai-api-key }}
         MAX_ITERATIONS: ${{ inputs.max-iterations }}
         TEST_TYPES: ${{ inputs.test-types }}
         APP_URL: ${{ inputs.app-url }}
@@ -79,3 +82,5 @@ runs:
         TECH_STACK_OVERRIDE: ${{ inputs.tech-stack-override }}
         APP_SECRETS: ${{ inputs.app-secrets }}
         GITHUB_TOKEN: ${{ github.token }}
+        AGENT_WORK_DIR: ${{ github.action_path }}/workspace
+        NODE_PATH: ${{ github.action_path }}/node_modules

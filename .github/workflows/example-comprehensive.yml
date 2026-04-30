@@ -40,7 +40,7 @@ on:
       ai-provider:
         description: 'AI Provider (claude, openai, gemini)'
         required: false
-        default: 'claude'
+        default: 'openai'
       max-iterations:
         description: 'Maximum fix iterations'
         required: false
@@ -101,7 +101,7 @@ jobs:
           REPO_BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
           
           # AI Provider Configuration
-          AI_PROVIDER: ${{ github.event.inputs.ai-provider || 'claude' }}
+          AI_PROVIDER: ${{ github.event.inputs.ai-provider || 'openai' }}
           CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -130,6 +130,10 @@ jobs:
           
           # GitHub Configuration
           GITHUB_TOKEN: ${{ github.token }}
+          
+          # Path Configuration (CRITICAL)
+          AGENT_WORK_DIR: ${{ github.workspace }}/.ignis-agent/workspace
+          NODE_PATH: ${{ github.workspace }}/.ignis-agent/node_modules
           
           # Logging
           LOG_LEVEL: 'info'

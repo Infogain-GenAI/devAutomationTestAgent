@@ -20,7 +20,7 @@ jobs:
     uses: <org>/ignis-test-agent/.github/workflows/ignis-testing.yml@main
     with:
       branch: ${{ github.event.inputs.branch || github.ref_name }}
-      ai-provider: claude
+      ai-provider: openai
       max-iterations: 3
       test-types: e2e,api,accessibility
       auto-start-app: true

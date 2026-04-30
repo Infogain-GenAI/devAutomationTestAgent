@@ -10,7 +10,7 @@ on:
       ai-provider:
         type: string
         description: 'AI provider (claude, openai, gemini)'
-        default: 'claude'
+        default: 'openai'
       max-iterations:
         type: number
         description: 'Maximum fix-and-retest iterations'
@@ -87,6 +87,9 @@ jobs:
           REPO_BRANCH: ${{ inputs.branch }}
           AI_PROVIDER: ${{ inputs.ai-provider }}
           AI_API_KEY: ${{ secrets.ai-api-key }}
+          OPENAI_API_KEY: ${{ secrets.ai-api-key }}
+          CLAUDE_API_KEY: ${{ secrets.ai-api-key }}
+          GEMINI_API_KEY: ${{ secrets.ai-api-key }}
           MAX_ITERATIONS: ${{ inputs.max-iterations }}
           TEST_TYPES: ${{ inputs.test-types }}
           APP_URL: ${{ inputs.app-url }}
@@ -98,6 +101,8 @@ jobs:
           ENABLE_BEST_PRACTICES_CHECK: ${{ inputs.enable-best-practices }}
           ENABLE_ENDPOINT_VALIDATION: ${{ inputs.enable-backend-validation }}
           GENERATE_ANALYSIS_REPORT: ${{ inputs.generate-report }}
+          AGENT_WORK_DIR: ${{ github.workspace }}/.ignis-agent/workspace
+          NODE_PATH: ${{ github.workspace }}/.ignis-agent/node_modules
 
       - name: Upload test artifacts
         if: always()
