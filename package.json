@@ -14,7 +14,9 @@
     "test:integration": "jest tests/integration",
     "lint": "eslint src/",
     "dev": "node --watch src/index.js",
-    "validate": "node scripts/validate-setup.js"
+    "validate": "node scripts/validate-setup.js",
+    "setup": "npm install && npx playwright install chromium --with-deps",
+    "test:local": "node src/cli.js"
   },
   "keywords": [
     "automation",

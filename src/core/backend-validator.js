@@ -16,15 +16,34 @@ class BackendValidator {
    */
   _loadAnalysisPrompts() {
     try {
-      const promptFile = path.resolve(this.config.agent.analysisPromptFile);
+      const promptFilePath = this.config.agent.analysisPromptFile;
+      if (!promptFilePath) {
+        logger.warn('Analysis prompts file path not configured, using defaults');
+        return this._getDefaultPrompts();
+      }
+      
+      // Resolve relative to project root (where package.json is)
+      // Works for: local dev, GitHub Actions, and Docker containers
+      const projectRoot = path.resolve(__dirname, '../..');
+      const promptFile = path.isAbsolute(promptFilePath) 
+        ? promptFilePath 
+        : path.join(projectRoot, promptFilePath);
+      
+      logger.debug(`Loading analysis prompts from: ${promptFile}`);
+      
       if (fs.existsSync(promptFile)) {
         const content = fs.readFileSync(promptFile, 'utf-8');
-        return JSON.parse(content);
+        const prompts = JSON.parse(content);
+        logger.info('Analysis prompts loaded successfully');
+        return prompts;
       }
-      logger.warn(`Analysis prompts file not found: ${promptFile}`);
+      
+      logger.warn(`Analysis prompts file not found at: ${promptFile}`);
+      logger.warn('Using default prompts instead');
       return this._getDefaultPrompts();
     } catch (err) {
       logger.error(`Failed to load analysis prompts: ${err.message}`);
+      logger.warn('Falling back to default prompts');
       return this._getDefaultPrompts();
     }
   }
