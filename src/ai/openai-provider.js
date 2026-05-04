@@ -9,7 +9,7 @@ class OpenAIProvider extends BaseAIProvider {
     super(config);
     this.client = new OpenAI({ apiKey: config.apiKey });
     this.model = config.model || 'gpt-4-turbo';
-    this.maxTokens = 8192;
+    this.maxTokens = 4096; // GPT-4 Turbo max limit
   }
 
   async analyzeCode(codeContext) {
