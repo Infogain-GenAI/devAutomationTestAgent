@@ -100,13 +100,73 @@ class DependencyInstaller {
   }
 
   /**
+   * Check if Playwright browsers are already installed.
+   */
+  static isPlaywrightInstalled() {
+    try {
+      // Check if PLAYWRIGHT_BROWSERS_PATH exists (set in Docker)
+      const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
+      if (browsersPath && fs.existsSync(browsersPath)) {
+        logger.info(`Playwright browsers already installed at: ${browsersPath}`);
+        return true;
+      }
+
+      // Check if running in Docker (common Docker environment indicators)
+      if (process.env.DOCKER_CONTAINER || fs.existsSync('/.dockerenv')) {
+        logger.info('Running in Docker container - assuming Playwright pre-installed');
+        return true;
+      }
+
+      // Check if chromium browser exists in common locations
+      const commonPaths = [
+        '/ms-playwright/chromium-*/chrome-linux/chrome',
+        path.join(process.env.HOME || '/root', '.cache/ms-playwright/chromium-*/chrome-linux/chrome')
+      ];
+
+      for (const pathPattern of commonPaths) {
+        try {
+          // Simple glob-like check
+          const dir = path.dirname(pathPattern);
+          if (fs.existsSync(dir)) {
+            const files = fs.readdirSync(dir, { recursive: true });
+            if (files.some(f => f.includes('chrome'))) {
+              logger.info('Playwright browsers found in system');
+              return true;
+            }
+          }
+        } catch {
+          // Ignore errors checking paths
+        }
+      }
+
+      return false;
+    } catch (err) {
+      logger.debug(`Error checking Playwright installation: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
    * Install Playwright browsers (chromium by default).
+   * Skips installation if browsers are already available (e.g., in Docker containers).
    */
   static async installPlaywrightBrowsers(workDir) {
+    // Skip if already installed (common in Docker containers)
+    if (this.isPlaywrightInstalled()) {
+      logger.info('✅ Playwright browsers already available - skipping installation');
+      return { success: true, skipped: true };
+    }
+
     logger.info('Installing Playwright browsers...');
 
+    // In containers, don't use --with-deps as system packages should already be installed
+    const isContainer = process.env.DOCKER_CONTAINER || fs.existsSync('/.dockerenv');
+    const args = isContainer 
+      ? ['playwright', 'install', 'chromium']  // Skip system deps in container
+      : ['playwright', 'install', '--with-deps', 'chromium'];
+
     return new Promise((resolve, reject) => {
-      const proc = spawn('npx', ['playwright', 'install', '--with-deps', 'chromium'], {
+      const proc = spawn('npx', args, {
         cwd: workDir,
         shell: true,
         stdio: 'pipe',

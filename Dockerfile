@@ -42,7 +42,8 @@ ENV NODE_ENV=production \
     ENABLE_ENDPOINT_VALIDATION=true \
     GENERATE_ANALYSIS_REPORT=true \
     REPORT_OUTPUT_DIR=/app/reports \
-    ANALYSIS_PROMPT_FILE=/app/config/analysis-prompts.json
+    ANALYSIS_PROMPT_FILE=/app/config/analysis-prompts.json \
+    DOCKER_CONTAINER=true
 
 # Health check for container orchestration (API server mode)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

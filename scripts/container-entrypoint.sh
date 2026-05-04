@@ -154,5 +154,10 @@ if [ -z "$AI_API_KEY" ] && [ -z "$OPENAI_API_KEY" ] && [ -z "$CLAUDE_API_KEY" ] 
   exit 1
 fi
 
+# Set LOG_DIR to workspace so logs are accessible after container exits
+export LOG_DIR="${REPO_PATH}/logs"
+echo "📝 Logs will be written to: ${LOG_DIR}"
+echo ""
+
 # Run the CLI
 exec node /app/src/cli.js "$@"
