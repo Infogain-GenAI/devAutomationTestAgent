@@ -14,6 +14,25 @@ async function main() {
   logger.info('IGNIS Automation Test Agent — CLI Mode (Primary)');
   logger.info('================================================');
 
+  // Pre-flight validation
+  logger.info('🔍 Pre-flight checks...');
+  
+  // Check required environment variables
+  const aiProvider = process.env.AI_PROVIDER || 'openai';
+  const aiApiKey = process.env.AI_API_KEY || 
+                   process.env.OPENAI_API_KEY || 
+                   process.env.CLAUDE_API_KEY || 
+                   process.env.GEMINI_API_KEY;
+  
+  if (!aiApiKey) {
+    logger.error('❌ No AI API key found in environment variables');
+    logger.error('   Expected one of: AI_API_KEY, OPENAI_API_KEY, CLAUDE_API_KEY, GEMINI_API_KEY');
+    throw new Error('Missing required AI API key');
+  }
+  
+  logger.info(`✅ AI Provider: ${aiProvider}`);
+  logger.info(`✅ AI API Key: ${aiApiKey.substring(0, 10)}...`);
+
   // Build config from environment variables
   const config = {
     ...defaultConfig,
@@ -37,6 +56,18 @@ async function main() {
   // Determine workspace path (same repo — checked out by actions/checkout)
   const repoPath = process.env.REPO_PATH || process.env.GITHUB_WORKSPACE || process.cwd();
   const branch = process.env.REPO_BRANCH || validatedConfig.agent.branch || 'main';
+
+  // Validate repository path exists
+  if (!fs.existsSync(repoPath)) {
+    logger.error(`❌ Repository path does not exist: ${repoPath}`);
+    throw new Error(`Repository path not found: ${repoPath}`);
+  }
+  
+  const repoStats = fs.statSync(repoPath);
+  if (!repoStats.isDirectory()) {
+    logger.error(`❌ Repository path is not a directory: ${repoPath}`);
+    throw new Error(`Repository path must be a directory: ${repoPath}`);
+  }
 
   logger.info(`Repository path: ${repoPath}`);
   logger.info(`Base branch: ${branch}`);
@@ -355,4 +386,31 @@ function copyLogsToOutputDir(outputDir) {
   }
 }
 
-main();
+// Run main with proper error handling
+main().catch(err => {
+  console.error('═'.repeat(80));
+  console.error('❌ FATAL ERROR - IGNIS Agent Failed to Start');
+  console.error('═'.repeat(80));
+  console.error(`Error: ${err.message}`);
+  console.error(`Stack: ${err.stack}`);
+  console.error('═'.repeat(80));
+  console.error('');
+  console.error('🔍 Common Issues:');
+  console.error('  1. Missing required environment variables (AI_API_KEY, REPO_PATH)');
+  console.error('  2. Invalid configuration in config files');
+  console.error('  3. Network issues connecting to AI provider');
+  console.error('  4. Insufficient permissions in workspace directory');
+  console.error('');
+  console.error('📖 Check logs in: logs/error.log and logs/combined.log');
+  console.error('');
+  
+  // Also log through logger if available
+  logger.error('═'.repeat(80));
+  logger.error('❌ FATAL ERROR - IGNIS Agent Failed to Start');
+  logger.error('═'.repeat(80));
+  logger.error(`Error: ${err.message}`);
+  logger.error(`Stack: ${err.stack}`);
+  logger.error('═'.repeat(80));
+  
+  process.exit(1);
+});

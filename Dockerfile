@@ -19,7 +19,7 @@ COPY scripts/ scripts/
 COPY action.yml ./
 
 # Make scripts executable
-RUN chmod +x scripts/*.js || true
+RUN chmod +x scripts/*.js scripts/*.sh || true
 
 # Install Playwright browsers (chromium only for smaller image)
 RUN npx playwright install --with-deps chromium
@@ -50,5 +50,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 EXPOSE 4000
 
-# Default: CLI mode for GitHub Actions/Azure. Override with `node src/index.js` for API server.
-CMD ["node", "/app/src/cli.js"]
+# Use entrypoint script to handle flags and validation
+ENTRYPOINT ["/app/scripts/container-entrypoint.sh"]
+
+# Default: Run CLI (can be overridden to run API server with: docker run ... node src/index.js)
+CMD []
