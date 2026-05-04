@@ -6,9 +6,9 @@ name: 'IGNIS Automation Test Agent - CORRECTED'
 # ============================================================================
 
 on:
-  push:
-    branches:
-      - '**'
+  # push:
+  #   branches:
+  #     - '**'
   workflow_dispatch:
     inputs:
       branch:
