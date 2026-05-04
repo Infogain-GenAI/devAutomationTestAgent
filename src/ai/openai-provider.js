@@ -34,16 +34,87 @@ class OpenAIProvider extends BaseAIProvider {
 
   async generateTests(analysisResult, testType, framework) {
     const systemPrompt = this._buildSystemPrompt('generate-tests');
+    
+    // Check if we're generating for gaps only
+    const hasGaps = analysisResult.testGaps && analysisResult.testGaps.length > 0;
+    const generateFor = analysisResult.generateFor || 'full-coverage';
+    
+    // Different instructions for unit vs E2E tests
+    const isUnitTest = ['unit', 'integration'].includes(testType);
+    
+    let testInstructions = '';
+    
+    if (isUnitTest) {
+      if (hasGaps && generateFor === 'gaps-only') {
+        testInstructions = `Generate ${testType} tests ONLY for these missing test scenarios:
+
+`;
+        analysisResult.testGaps.forEach((gap, idx) => {
+          testInstructions += `${idx + 1}. File: ${gap.file} (${gap.type})
+   Priority: ${gap.priority}
+   Reason: ${gap.reason}
+
+`;
+        });
+        testInstructions += `
+IMPORTANT: Generate tests ONLY for the files listed above. Do NOT create tests for files already covered.
+
+`;
+      } else {
+        testInstructions = `Generate ${testType} tests for backend code using Jest/Mocha. Include:
+- Unit tests for individual functions/methods
+- Mock external dependencies
+- Test edge cases and error handling
+- Use describe/it/expect syntax
+`;
+      }
+      testInstructions += `Return JSON with:
+{
+  "files": [
+    { "path": "tests/${testType}/filename.test.js", "content": "// full test file" }
+  ],
+  "dependencies": ["jest", "@types/jest"] // or mocha equivalents
+}`;
+    } else {
+      if (hasGaps && generateFor === 'gaps-only') {
+        testInstructions = `Generate Playwright ${testType} tests ONLY for these missing scenarios:
+
+`;
+        analysisResult.testGaps.forEach((gap, idx) => {
+          if (testType === 'api' && gap.endpoint) {
+            testInstructions += `${idx + 1}. Endpoint: ${gap.endpoint}
+   File: ${gap.file}
+   Priority: ${gap.priority}
+
+`;
+          } else if (testType === 'e2e' && gap.route) {
+            testInstructions += `${idx + 1}. Route: ${gap.route}
+   File: ${gap.file}
+   Priority: ${gap.priority}
+
+`;
+          }
+        });
+        testInstructions += `
+IMPORTANT: Generate tests ONLY for the scenarios listed above. Do NOT create tests for already covered scenarios.
+
+`;
+      } else {
+        testInstructions = `Generate Playwright ${testType} tests based on the analysis. `;
+      }
+      testInstructions += `Return JSON with:
+{
+  "files": [
+    { "path": "tests/${testType}/test.spec.js", "content": "// full test file" }
+  ]
+}`;
+    }
+    
     const userMessage = JSON.stringify({
       testType,
       framework,
       analysis: analysisResult,
-      instructions: `Generate Playwright ${testType} tests based on the analysis. Return a JSON object with:
-{
-  "files": [
-    { "path": "relative/path/to/test.spec.js", "content": "// full test file content" }
-  ]
-}`
+      instructions: testInstructions
     }, null, 2);
 
     logger.info(`OpenAI generating ${testType} tests (model: ${this.model})`);

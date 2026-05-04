@@ -45,9 +45,12 @@ const defaults = {
     }
   },
   testing: {
-    types: (process.env.TEST_TYPES || 'e2e,api,visual,accessibility,performance').split(',').map(t => t.trim()),
+    types: (process.env.TEST_TYPES || 'unit,integration,e2e,api').split(',').map(t => t.trim()),
     browsers: (process.env.BROWSERS || 'chromium').split(',').map(b => b.trim()),
-    headless: process.env.HEADLESS !== 'false'
+    headless: process.env.HEADLESS !== 'false',
+    // Unit test configuration
+    unitTestFramework: process.env.UNIT_TEST_FRAMEWORK || 'auto', // auto, jest, mocha
+    runUnitTests: process.env.RUN_UNIT_TESTS !== 'false'
   },
   app: {
     autoStart: process.env.AUTO_START_APP === 'true',

@@ -12,6 +12,8 @@ const StackDetector = require('./stack-detector');
 const CodeAnalyzer = require('./code-analyzer');
 const TestGenerator = require('./test-generator');
 const TestRunner = require('./test-runner');
+const UnitTestRunner = require('./unit-test-runner');
+const TestCoverageScanner = require('./test-coverage-scanner');
 const AppLauncher = require('./app-launcher');
 const IssueFixer = require('./issue-fixer');
 const BackendValidator = require('./backend-validator');
@@ -30,6 +32,8 @@ class AgentOrchestrator {
     this.repoManager = new RepoManager(config);
     this.codeAnalyzer = new CodeAnalyzer(this.aiProvider);
     this.testGenerator = new TestGenerator(this.aiProvider);
+    this.unitTestRunner = new UnitTestRunner(config);
+    this.testCoverageScanner = new TestCoverageScanner();
     this.issueFixer = new IssueFixer(this.aiProvider);
     this.appLauncher = new AppLauncher();
     this.backendValidator = new BackendValidator(this.aiProvider, config);
@@ -163,12 +167,77 @@ class AgentOrchestrator {
         }
       }
 
-      // ── Step 7: Generate test suites ────────────────────────
-      updateStatus('generating');
+      // ── Step 6.5: Scan for Existing Tests ───────────────────
+      updateStatus('scanning-tests');
+      logger.info('Scanning repository for existing test coverage...');
+      
+      const existingTests = await this.testCoverageScanner.scanExistingTests(workDir);
+      const testGaps = await this.testCoverageScanner.identifyTestGaps(workDir, codeAnalysis, existingTests);
+      
+      // Filter test types to only generate missing tests
       const testTypes = this.config.testing.types;
-      const generated = await this.testGenerator.generateAll(
-        workDir, codeAnalysis, testTypes, techStack
-      );
+      const testPlan = this.testCoverageScanner.filterTestTypesToGenerate(testTypes, existingTests, testGaps);
+      
+      logger.info('\n📋 Test Generation Plan:');
+      Object.entries(testPlan).forEach(([type, plan]) => {
+        if (plan.generate) {
+          logger.info(`   ✅ ${type}: Generate ${plan.scope} tests (${plan.reason})`);
+          if (plan.targets) {
+            logger.info(`      → ${plan.targets.length} scenarios to cover`);
+          }
+        } else {
+          logger.info(`   ⏭️  ${type}: Skip (${plan.reason}, ${plan.existing} existing tests)`);
+        }
+      });
+      logger.info('');
+
+      // ── Step 7: Generate test suites (only for gaps) ────────
+      updateStatus('generating');
+      
+      // Filter to only types that need generation
+      const typesToGenerate = Object.entries(testPlan)
+        .filter(([_, plan]) => plan.generate)
+        .map(([type, _]) => type);
+      
+      if (typesToGenerate.length === 0) {
+        logger.info('✅ All required tests already exist - skipping test generation');
+      }
+      
+      const generated = typesToGenerate.length > 0 
+        ? await this.testGenerator.generateAll(workDir, codeAnalysis, typesToGenerate, techStack, testGaps)
+        : {};
+
+      // ── Step 7.5: Run Unit Tests (if enabled) ───────────────
+      let unitTestResults = null;
+      const hasUnitTests = testTypes.some(t => ['unit', 'integration'].includes(t));
+      
+      if (hasUnitTests && this.config.testing.runUnitTests !== false) {
+        updateStatus('testing-units');
+        logger.info('Running unit tests...');
+        
+        try {
+          const testDir = path.join(workDir, 'generated-tests/tests');
+          unitTestResults = await this.unitTestRunner.runTests(workDir, testDir);
+          
+          // Write results to log
+          this.unitTestRunner.writeResultsToLog(unitTestResults, workDir);
+          
+          if (unitTestResults.failed === 0) {
+            logger.info(`✅ All ${unitTestResults.passed} unit tests passed!`);
+          } else {
+            logger.warn(`⚠️ ${unitTestResults.failed} unit test(s) failed`);
+          }
+        } catch (err) {
+          logger.error(`Unit test execution failed: ${err.message}`);
+          unitTestResults = {
+            framework: 'unknown',
+            passed: 0,
+            failed: 1,
+            total: 1,
+            error: err.message
+          };
+        }
+      }
 
       // ── Step 8: Start target application ────────────────────
       updateStatus('starting-app');
@@ -360,8 +429,18 @@ class AgentOrchestrator {
           filesValidated: bestPracticesValidation.validatedFiles,
           issuesFound: bestPracticesValidation.issues.length
         } : null,
+        unitTestResults: unitTestResults ? {
+          framework: unitTestResults.framework,
+          total: unitTestResults.total,
+          passed: unitTestResults.passed,
+          failed: unitTestResults.failed,
+          skipped: unitTestResults.skipped,
+          duration: unitTestResults.duration,
+          coverage: unitTestResults.coverage,
+          exitCode: unitTestResults.exitCode
+        } : null,
         testResults: lastTestResult ? {
-        reportPath: reportInfo?.reportPath || null,
+          reportPath: reportInfo?.reportPath || null,
           passed: lastTestResult.passed,
           failed: lastTestResult.failed,
           total: lastTestResult.total
