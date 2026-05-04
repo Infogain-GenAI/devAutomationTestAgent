@@ -1,0 +1,145 @@
+name: 'IGNIS Automation Test Agent - CORRECTED'
+
+# ============================================================================
+# COPY THIS CORRECTED VERSION TO YOUR TEST REPOSITORY
+# Replace your existing workflow with this one
+# ============================================================================
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to test'
+        required: false
+        default: 'main'
+      ai-provider:
+        description: 'AI provider'
+        required: false
+        default: 'openai'
+        type: choice
+        options:
+          - openai
+          - claude
+          - gemini
+
+jobs:
+  run-automation-tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - name: Login to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_REGISTRY_URL }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Pull IGNIS Automation Agent from ACR
+        run: |
+          ACR_REGISTRY="${{ secrets.ACR_REGISTRY_URL }}"
+          IMAGE_NAME="${{ vars.ACR_IMAGE_NAME || 'automationtestagent' }}"
+          IMAGE_TAG="${{ vars.ACR_IMAGE_TAG || 'latest_v0' }}"
+          FULL_IMAGE="${ACR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          
+          echo "🐳 Pulling container image: ${FULL_IMAGE}"
+          docker pull "${FULL_IMAGE}"
+
+      # ============================================================================
+      # CRITICAL FIXES APPLIED HERE:
+      # 1. Removed: -w /workspace (use container's WORKDIR /app)
+      # 2. Fixed: REPO_PATH="/workspace" (container path, not host path)
+      # 3. Added: GITHUB_WORKSPACE="/workspace"
+      # 4. Added: Better error output with docker logs
+      # ============================================================================
+      
+      - name: Run IGNIS Automation Test Agent Container
+        id: run-agent
+        continue-on-error: true
+        run: |
+          ACR_REGISTRY="${{ secrets.ACR_REGISTRY_URL }}"
+          IMAGE_NAME="${{ vars.ACR_IMAGE_NAME || 'automationtestagent' }}"
+          IMAGE_TAG="${{ vars.ACR_IMAGE_TAG || 'latest_v0' }}"
+          FULL_IMAGE="${ACR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          
+          echo "🚀 Starting IGNIS Automation Test Agent..."
+          echo "📦 Image: ${FULL_IMAGE}"
+          echo "📁 Test Repository: ${{ github.workspace }}"
+          echo "🔧 AI Provider: ${{ github.event.inputs.ai-provider || vars.AI_PROVIDER || 'openai' }}"
+          echo ""
+          
+          # Run container without --rm first to capture logs on failure
+          CONTAINER_ID=$(docker run -d \
+            --name ignis-automation-agent \
+            -v "${{ github.workspace }}:/workspace" \
+            -e REPO_PATH="/workspace" \
+            -e REPO_BRANCH="${{ github.event.inputs.branch || github.ref_name }}" \
+            -e GITHUB_TOKEN="${{ github.token }}" \
+            -e GITHUB_WORKSPACE="/workspace" \
+            -e AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.AI_PROVIDER || 'openai' }}" \
+            -e AI_API_KEY="${{ secrets.AI_API_KEY }}" \
+            -e OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY || secrets.AI_API_KEY }}" \
+            -e CLAUDE_API_KEY="${{ secrets.CLAUDE_API_KEY || secrets.AI_API_KEY }}" \
+            -e GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY || secrets.AI_API_KEY }}" \
+            -e MAX_ITERATIONS="${{ vars.MAX_ITERATIONS || '3' }}" \
+            -e TEST_TYPES="${{ vars.TEST_TYPES || 'e2e,api,visual,accessibility,performance' }}" \
+            -e APP_URL="${{ vars.APP_URL || '' }}" \
+            -e AUTO_START_APP="${{ vars.AUTO_START_APP || 'true' }}" \
+            -e APP_START_COMMAND="${{ vars.APP_START_COMMAND || '' }}" \
+            -e APP_SECRETS="${{ secrets.APP_SECRETS || '' }}" \
+            -e LOG_LEVEL="debug" \
+            "${FULL_IMAGE}")
+          
+          echo "Container ID: ${CONTAINER_ID}"
+          
+          # Wait for container to complete and stream logs
+          docker logs -f "${CONTAINER_ID}" || true
+          
+          # Get exit code
+          EXIT_CODE=$(docker inspect "${CONTAINER_ID}" --format='{{.State.ExitCode}}')
+          
+          echo ""
+          echo "Container exited with code: ${EXIT_CODE}"
+          
+          # Cleanup
+          docker rm "${CONTAINER_ID}" || true
+          
+          # Exit with same code
+          exit ${EXIT_CODE}
+
+      - name: Check agent execution result
+        if: steps.run-agent.outcome == 'failure'
+        run: |
+          echo "❌ IGNIS Automation Agent failed"
+          echo "Please check the logs above for error details"
+          exit 1
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ignis-test-results-${{ github.run_number }}
+          path: |
+            generated-tests/
+            test-results/
+            playwright-report/
+            reports/
+            logs/
+          retention-days: 30
+
+# ============================================================================
+# KEY CHANGES SUMMARY:
+# ============================================================================
+# ❌ REMOVED: -w /workspace (working directory override)
+# ✅ FIXED:   REPO_PATH="/workspace" (was host path, now container path)
+# ✅ ADDED:   GITHUB_WORKSPACE="/workspace"
+# ✅ ADDED:   LOG_LEVEL="debug" (for better error visibility)
+# ✅ ADDED:   Better error handling and log capture
+# ============================================================================

@@ -66,6 +66,40 @@ class TestRunner {
       proc.on('close', (code) => {
         logger.info(`Playwright exited with code ${code}`);
 
+        // Write raw output to log files for GitHub Actions
+        const logDir = process.env.LOG_DIR || 'logs';
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const testLogFile = path.join(logDir, `test-run-${timestamp}.log`);
+        
+        try {
+          fs.mkdirSync(logDir, { recursive: true });
+          
+          const logContent = [
+            '═'.repeat(80),
+            `PLAYWRIGHT TEST RUN LOG`,
+            `Timestamp: ${new Date().toISOString()}`,
+            `Exit Code: ${code}`,
+            `Working Directory: ${workDir}`,
+            `Test Directory: ${testDir}`,
+            '═'.repeat(80),
+            '',
+            'STDOUT:',
+            '-'.repeat(80),
+            stdout || '(no output)',
+            '',
+            'STDERR:',
+            '-'.repeat(80),
+            stderr || '(no errors)',
+            '',
+            '═'.repeat(80)
+          ].join('\n');
+          
+          fs.writeFileSync(testLogFile, logContent, 'utf-8');
+          logger.info(`Test output written to: ${testLogFile}`);
+        } catch (err) {
+          logger.warn(`Failed to write test log file: ${err.message}`);
+        }
+
         // Try to parse JSON results
         let jsonResults = null;
         if (fs.existsSync(resultsFile)) {
@@ -86,6 +120,10 @@ class TestRunner {
         }
 
         const parsed = TestRunner.parseResults(jsonResults, code);
+        
+        // Write detailed test results to separate log file
+        TestRunner.writeDetailedTestLog(parsed, workDir, testLogFile);
+        
         resolve(parsed);
       });
 
@@ -262,6 +300,185 @@ class TestRunner {
 
       proc.on('error', reject);
     });
+  }
+
+  /**
+   * Write detailed test results to log file for GitHub Actions
+   */
+  static writeDetailedTestLog(testResults, workDir, originalLogFile) {
+    const logDir = process.env.LOG_DIR || 'logs';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const detailedLogFile = path.join(logDir, `test-results-${timestamp}.log`);
+    
+    try {
+      fs.mkdirSync(logDir, { recursive: true });
+      
+      const lines = [
+        '═'.repeat(100),
+        `DETAILED TEST RESULTS - IGNIS Automation Test Agent`,
+        `Generated: ${new Date().toISOString()}`,
+        `Working Directory: ${workDir}`,
+        '═'.repeat(100),
+        '',
+        '📊 SUMMARY',
+        '-'.repeat(100),
+        `Total Tests:     ${testResults.total}`,
+        `✅ Passed:       ${testResults.passed}`,
+        `❌ Failed:       ${testResults.failed}`,
+        `⏭️  Skipped:      ${testResults.skipped}`,
+        `⏱️  Duration:     ${(testResults.duration / 1000).toFixed(2)}s`,
+        `🚪 Exit Code:    ${testResults.exitCode}`,
+        '',
+      ];
+      
+      // Overall status
+      if (testResults.failed === 0) {
+        lines.push('✅ STATUS: ALL TESTS PASSED');
+      } else {
+        lines.push(`❌ STATUS: ${testResults.failed} TEST(S) FAILED`);
+      }
+      lines.push('');
+      
+      // Detailed test results
+      if (testResults.allTests && testResults.allTests.length > 0) {
+        lines.push('═'.repeat(100));
+        lines.push('📝 DETAILED TEST RESULTS');
+        lines.push('═'.repeat(100));
+        lines.push('');
+        
+        testResults.allTests.forEach((test, index) => {
+          const statusIcon = test.status === 'passed' ? '✅' : 
+                           test.status === 'failed' ? '❌' : 
+                           test.status === 'skipped' ? '⏭️' : '❓';
+          
+          lines.push(`${index + 1}. ${statusIcon} ${test.testName}`);
+          lines.push(`   File:     ${test.file || 'N/A'}`);
+          lines.push(`   Status:   ${test.status.toUpperCase()}`);
+          lines.push(`   Duration: ${(test.duration / 1000).toFixed(2)}s`);
+          
+          if (test.error) {
+            lines.push(`   Error:    ${test.error}`);
+          }
+          
+          lines.push('');
+        });
+      }
+      
+      // Failure details
+      if (testResults.failures && testResults.failures.length > 0) {
+        lines.push('═'.repeat(100));
+        lines.push('❌ FAILURE DETAILS');
+        lines.push('═'.repeat(100));
+        lines.push('');
+        
+        testResults.failures.forEach((failure, index) => {
+          lines.push(`FAILURE #${index + 1}`);
+          lines.push('-'.repeat(100));
+          lines.push(`Test:     ${failure.testName}`);
+          lines.push(`File:     ${failure.file || 'N/A'}`);
+          lines.push(`Category: ${failure.category || 'unknown'}`);
+          lines.push('');
+          lines.push('Error Message:');
+          lines.push(failure.error || 'No error message');
+          lines.push('');
+          
+          if (failure.stackTrace) {
+            lines.push('Stack Trace:');
+            lines.push(failure.stackTrace);
+            lines.push('');
+          }
+          
+          lines.push('');
+        });
+      }
+      
+      // Categorized failures summary
+      if (testResults.failures && testResults.failures.length > 0) {
+        const categorized = TestRunner.categorizeFailures(testResults.failures);
+        const categories = {};
+        
+        categorized.forEach(f => {
+          categories[f.category] = (categories[f.category] || 0) + 1;
+        });
+        
+        lines.push('═'.repeat(100));
+        lines.push('📊 FAILURE BREAKDOWN BY CATEGORY');
+        lines.push('═'.repeat(100));
+        lines.push('');
+        
+        Object.entries(categories).forEach(([category, count]) => {
+          const icon = category === 'frontend' ? '🖥️' :
+                      category === 'backend' ? '⚙️' :
+                      category === 'test' ? '🧪' :
+                      category === 'environment' ? '🌐' : '❓';
+          lines.push(`${icon} ${category.toUpperCase()}: ${count} failure(s)`);
+        });
+        lines.push('');
+      }
+      
+      // Recommendations
+      lines.push('═'.repeat(100));
+      lines.push('💡 RECOMMENDATIONS');
+      lines.push('═'.repeat(100));
+      lines.push('');
+      
+      if (testResults.failed === 0) {
+        lines.push('✅ All tests passed! No action needed.');
+      } else {
+        lines.push('To debug failures:');
+        lines.push('1. Review the failure details above');
+        lines.push('2. Check the stack traces for specific error locations');
+        lines.push('3. Review the test files mentioned in failures');
+        lines.push('4. Check application logs for backend errors');
+        lines.push('5. Verify environment configuration (URLs, ports, secrets)');
+        
+        if (testResults.failures.some(f => f.category === 'environment')) {
+          lines.push('');
+          lines.push('⚠️  Environment issues detected:');
+          lines.push('   - Check if the application is running and accessible');
+          lines.push('   - Verify APP_URL environment variable is correct');
+          lines.push('   - Check network connectivity');
+          lines.push('   - Ensure required services are up');
+        }
+        
+        if (testResults.failures.some(f => f.category === 'backend')) {
+          lines.push('');
+          lines.push('⚠️  Backend issues detected:');
+          lines.push('   - Review API endpoint implementations');
+          lines.push('   - Check server logs for errors');
+          lines.push('   - Verify database connectivity');
+          lines.push('   - Review API response formats');
+        }
+        
+        if (testResults.failures.some(f => f.category === 'test')) {
+          lines.push('');
+          lines.push('⚠️  Test issues detected:');
+          lines.push('   - Review test selectors and assertions');
+          lines.push('   - Update tests if UI has changed');
+          lines.push('   - Check for timing issues (add waits if needed)');
+          lines.push('   - Verify test data and expectations');
+        }
+      }
+      
+      lines.push('');
+      lines.push('═'.repeat(100));
+      lines.push(`Full test output available in: ${originalLogFile || 'N/A'}`);
+      lines.push('═'.repeat(100));
+      
+      const logContent = lines.join('\n');
+      fs.writeFileSync(detailedLogFile, logContent, 'utf-8');
+      
+      logger.info(`✅ Detailed test results written to: ${detailedLogFile}`);
+      logger.info(`   This file contains comprehensive test results for GitHub Actions artifacts`);
+      
+      // Also write a JSON version for programmatic access
+      const jsonLogFile = detailedLogFile.replace('.log', '.json');
+      fs.writeFileSync(jsonLogFile, JSON.stringify(testResults, null, 2), 'utf-8');
+      logger.info(`   JSON results: ${jsonLogFile}`);
+      
+    } catch (err) {
+      logger.warn(`Failed to write detailed test log: ${err.message}`);
+    }
   }
 }
 

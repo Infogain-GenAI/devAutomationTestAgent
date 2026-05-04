@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node src/index.js",
     "cli": "node src/cli.js",
+    "preflight": "node scripts/preflight-check.js",
     "test": "jest --coverage",
     "test:unit": "jest tests/unit",
     "test:integration": "jest tests/integration",
@@ -16,7 +17,10 @@
     "dev": "node --watch src/index.js",
     "validate": "node scripts/validate-setup.js",
     "setup": "npm install && npx playwright install chromium --with-deps",
-    "test:local": "node src/cli.js"
+    "test:local": "node scripts/preflight-check.js && node src/cli.js",
+    "build:production": "node scripts/build-production.js",
+    "docker:build": "docker build -t ignis-test-agent:latest .",
+    "docker:diagnose": "docker run --rm ignis-test-agent:latest node scripts/diagnose-container.js"
   },
   "keywords": [
     "automation",
