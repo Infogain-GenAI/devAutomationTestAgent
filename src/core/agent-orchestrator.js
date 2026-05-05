@@ -82,17 +82,43 @@ class AgentOrchestrator {
       // Create fix branch
       const branch = runConfig.branch || this.config.agent.branch || 'main';
       const fixBranch = `${this.config.agent.fixBranchPrefix}-${this.runId.slice(0, 8)}`;
+      logger.info(`Creating branch: ${fixBranch} from ${branch}`);
       await this.repoManager.createBranch(fixBranch);
+      logger.info(`✅ Branch created and checked out: ${fixBranch}`);
 
       // ── Step 3: Install dependencies ────────────────────────
+      logger.info('Starting dependency installation...');
       updateStatus('installing');
-      const packageManager = DependencyInstaller.detectPackageManager(workDir);
-      await DependencyInstaller.installDependencies(workDir, packageManager);
-      await DependencyInstaller.installPlaywrightBrowsers(workDir);
-      DependencyInstaller.verifyInstallation(workDir);
+      
+      try {
+        const packageManager = DependencyInstaller.detectPackageManager(workDir);
+        logger.info(`Package manager detected: ${packageManager}`);
+        
+        if (packageManager) {
+          logger.info('Installing project dependencies...');
+          await DependencyInstaller.installDependencies(workDir, packageManager);
+          logger.info('✅ Dependencies installed');
+          
+          logger.info('Installing Playwright browsers...');
+          await DependencyInstaller.installPlaywrightBrowsers(workDir);
+          logger.info('✅ Playwright browsers installed');
+          
+          logger.info('Verifying installation...');
+          DependencyInstaller.verifyInstallation(workDir);
+          logger.info('✅ Installation verified');
+        } else {
+          logger.warn('No package manager detected, skipping dependency installation');
+        }
+      } catch (installError) {
+        logger.error(`Dependency installation failed: ${installError.message}`);
+        logger.error(`Stack trace: ${installError.stack}`);
+        throw new Error(`Dependency installation failed: ${installError.message}`);
+      }
 
       // ── Step 4: Resolve environment ─────────────────────────
+      logger.info('Resolving environment variables...');
       updateStatus('configuring');
+      
       let providedSecrets = {};
       if (process.env.APP_SECRETS) {
         try {
@@ -104,15 +130,22 @@ class AgentOrchestrator {
       if (runConfig.appSecrets) {
         providedSecrets = { ...providedSecrets, ...runConfig.appSecrets };
       }
+      
       const { envMap, sources } = EnvHandler.resolveEnvironment(workDir, providedSecrets);
+      logger.info(`Detected ${Object.keys(envMap).length} environment variables`);
       EnvHandler.writeEnvFile(workDir, envMap);
+      logger.info('✅ Environment configuration complete');
 
       // ── Step 5: Detect tech stack ───────────────────────────
+      logger.info('Detecting technology stack...');
       const techStack = StackDetector.detect(workDir, runConfig.techStackOverride || {});
+      logger.info(`Stack detected: ${JSON.stringify(techStack)}`);
 
       // ── Step 6: Analyze codebase ────────────────────────────
+      logger.info('Starting code analysis...');
       updateStatus('analyzing');
       const codeAnalysis = await this.codeAnalyzer.analyze(workDir);
+      logger.info('✅ Code analysis complete');
 
       // ── Step 6a: Backend Validation (NEW) ───────────────────
       let backendValidation = null;
@@ -168,8 +201,8 @@ class AgentOrchestrator {
       }
 
       // ── Step 6.5: Scan for Existing Tests ───────────────────
-      updateStatus('scanning-tests');
       logger.info('Scanning repository for existing test coverage...');
+      updateStatus('scanning-tests');
       
       const existingTests = await this.testCoverageScanner.scanExistingTests(workDir);
       const testGaps = await this.testCoverageScanner.identifyTestGaps(workDir, codeAnalysis, existingTests);
@@ -190,8 +223,10 @@ class AgentOrchestrator {
         }
       });
       logger.info('');
+      logger.info('✅ Test coverage scan complete');
 
       // ── Step 7: Generate test suites (only for gaps) ────────
+      logger.info('Starting test generation...');
       updateStatus('generating');
       
       // Filter to only types that need generation
@@ -219,14 +254,17 @@ class AgentOrchestrator {
       const generated = typesToGenerate.length > 0 
         ? await this.testGenerator.generateAll(workDir, codeAnalysis, typesToGenerate, techStack, gapsForGeneration)
         : {};
+      
+      logger.info('✅ Test generation complete');
+      logger.info(`Generated test files: ${Object.values(generated).reduce((sum, g) => sum + (g.files?.length || 0), 0)} total`);
 
       // ── Step 7.5: Run Unit Tests (if enabled) ───────────────
       let unitTestResults = null;
       const hasUnitTests = testTypes.some(t => ['unit', 'integration'].includes(t));
       
       if (hasUnitTests && this.config.testing.runUnitTests !== false) {
-        updateStatus('testing-units');
         logger.info('Running unit tests...');
+        updateStatus('testing-units');
         
         try {
           const testDir = path.join(workDir, 'generated-tests/tests');
@@ -253,6 +291,7 @@ class AgentOrchestrator {
       }
 
       // ── Step 8: Start target application ────────────────────
+      logger.info('Starting target application...');
       updateStatus('starting-app');
       const appResult = await this.appLauncher.startApp(workDir, techStack, {
         url: this.config.app.url || runConfig.appUrl,
@@ -260,6 +299,14 @@ class AgentOrchestrator {
         startCommand: this.config.app.startCommand || runConfig.appStartCommand,
         port: this.config.app.port
       });
+      
+      if (appResult.started) {
+        logger.info(`✅ Application started successfully at: ${appResult.url}`);
+      } else if (appResult.url) {
+        logger.info(`Using provided app URL: ${appResult.url}`);
+      } else {
+        logger.warn('⚠️ Application not started, tests may fail');
+      }
 
       // If app didn't start, disable E2E/visual tests
       let activeTestTypes = [...testTypes];
@@ -269,6 +316,10 @@ class AgentOrchestrator {
       }
 
       const appUrl = appResult.url || this.config.app.url || null;
+      
+      // ── Step 9: Run tests iteratively ───────────────────────
+      logger.info(`Starting test execution phase (${this.config.agent.maxIterations} max iterations)...`);
+      updateStatus('testing');
 
       // ── Step 9: Iteration loop ──────────────────────────────
       const maxIterations = this.config.agent.maxIterations;
@@ -472,6 +523,113 @@ class AgentOrchestrator {
       };
 
       updateStatus('completed');
+      
+      // ── Log Comprehensive Summary ───────────────────────────
+      logger.info('\n' + '='.repeat(80));
+      logger.info('📊 AUTOMATION TEST AGENT - EXECUTION COMPLETE');
+      logger.info('='.repeat(80));
+      
+      // Backend Analysis
+      if (backendValidation) {
+        logger.info('\n🔍 BACKEND ANALYSIS:');
+        logger.info(`   Total Endpoints Analyzed: ${backendValidation.totalEndpoints}`);
+        logger.info(`   Issues Found: ${backendValidation.issues.length}`);
+        logger.info(`   Critical Issues: ${backendValidation.issues.filter(i => i.severity === 'critical').length}`);
+        if (backendValidation.endpoints && backendValidation.endpoints.length > 0) {
+          logger.info(`\n   📍 API Endpoints Tested:`);
+          backendValidation.endpoints.slice(0, 10).forEach(ep => {
+            logger.info(`      - ${ep.method} ${ep.path} (${ep.file})`);
+          });
+          if (backendValidation.endpoints.length > 10) {
+            logger.info(`      ... and ${backendValidation.endpoints.length - 10} more`);
+          }
+        }
+      }
+      
+      // Test Coverage
+      logger.info('\n✅ TEST EXECUTION SUMMARY:');
+      if (unitTestResults) {
+        logger.info(`   Unit Tests (${unitTestResults.framework}):`);
+        logger.info(`      Total: ${unitTestResults.total}`);
+        logger.info(`      Passed: ${unitTestResults.passed} ✅`);
+        logger.info(`      Failed: ${unitTestResults.failed} ${unitTestResults.failed > 0 ? '❌' : ''}`);
+        logger.info(`      Duration: ${unitTestResults.duration}ms`);
+        if (unitTestResults.coverage) {
+          logger.info(`      Coverage: ${unitTestResults.coverage.statements}% statements`);
+        }
+      }
+      
+      if (lastTestResult) {
+        logger.info(`   E2E/Integration Tests:`);
+        logger.info(`      Total: ${lastTestResult.total}`);
+        logger.info(`      Passed: ${lastTestResult.passed} ✅`);
+        logger.info(`      Failed: ${lastTestResult.failed} ${lastTestResult.failed > 0 ? '❌' : ''}`);
+      }
+      
+      // Iterations & Fixes
+      logger.info('\n🔄 FIX ITERATIONS:');
+      logger.info(`   Total Iterations: ${this.currentIteration}/${maxIterations}`);
+      this.iterationHistory.forEach((iter, idx) => {
+        logger.info(`   Iteration ${idx + 1}:`);
+        logger.info(`      Tests Passed: ${iter.passed}/${iter.total}`);
+        logger.info(`      App Fixes Applied: ${iter.appFixes}`);
+        logger.info(`      Test Fixes Applied: ${iter.testFixes}`);
+      });
+      
+      // Code Analysis Details
+      if (codeAnalysis) {
+        logger.info('\n📁 CODEBASE ANALYSIS:');
+        logger.info(`   Files Scanned: ${codeAnalysis.fileCount || 'N/A'}`);
+        logger.info(`   Routes Found: ${codeAnalysis.routes?.length || 0}`);
+        logger.info(`   API Endpoints: ${codeAnalysis.endpoints?.length || 0}`);
+        logger.info(`   Components: ${codeAnalysis.components?.length || 0}`);
+        
+        if (codeAnalysis.endpoints && codeAnalysis.endpoints.length > 0) {
+          logger.info(`\n   🔗 API Endpoints Identified:`);
+          codeAnalysis.endpoints.forEach(ep => {
+            logger.info(`      - ${ep.method} ${ep.path}`);
+          });
+        }
+        
+        if (codeAnalysis.routes && codeAnalysis.routes.length > 0) {
+          logger.info(`\n   🛣️  Routes Identified:`);
+          codeAnalysis.routes.forEach(route => {
+            logger.info(`      - ${route}`);
+          });
+        }
+      }
+      
+      // Test Generation Details
+      if (typesToGenerate && typesToGenerate.length > 0) {
+        logger.info('\n🧪 TESTS GENERATED:');
+        typesToGenerate.forEach(type => {
+          const gen = generated[type];
+          if (gen && gen.files) {
+            logger.info(`   ${type}: ${gen.files.length} files`);
+            gen.files.forEach(file => {
+              logger.info(`      - ${file}`);
+            });
+          }
+        });
+      }
+      
+      // Pull Requests
+      if (prResults.fixPrUrl || prResults.reportPrUrl) {
+        logger.info('\n🔀 PULL REQUESTS:');
+        if (prResults.fixPrUrl) {
+          logger.info(`   Fix PR: ${prResults.fixPrUrl}`);
+        }
+        if (prResults.reportPrUrl) {
+          logger.info(`   Report PR: ${prResults.reportPrUrl}`);
+        }
+      }
+      
+      // Final Status
+      logger.info('\n' + '='.repeat(80));
+      logger.info(`🎯 FINAL STATUS: ${allPassed ? '✅ ALL PASSED' : '⚠️ PARTIAL SUCCESS'}`);
+      logger.info(`⏱️  Duration: ${Math.round((Date.now() - this.startTime) / 1000)}s`);
+      logger.info('='.repeat(80) + '\n');
+      
       logger.info(`Agent run complete: ${JSON.stringify(this.summary)}`);
 
       // ── Step 13: Cleanup ────────────────────────────────────
