@@ -91,20 +91,20 @@ class AgentOrchestrator {
       updateStatus('installing');
       
       try {
-        const packageManager = DependencyInstaller.detectPackageManager(workDir);
-        logger.info(`Package manager detected: ${packageManager}`);
+        const { manager: packageManager, installDir } = DependencyInstaller.detectPackageManager(workDir);
+        logger.info(`Package manager detected: ${packageManager}${installDir !== workDir ? ` (in ${path.relative(workDir, installDir) || '.'})` : ''}`);
         
         if (packageManager) {
           logger.info('Installing project dependencies...');
-          await DependencyInstaller.installDependencies(workDir, packageManager);
+          await DependencyInstaller.installDependencies(installDir, packageManager);
           logger.info('✅ Dependencies installed');
           
           logger.info('Installing Playwright browsers...');
-          await DependencyInstaller.installPlaywrightBrowsers(workDir);
+          await DependencyInstaller.installPlaywrightBrowsers(installDir);
           logger.info('✅ Playwright browsers installed');
           
           logger.info('Verifying installation...');
-          DependencyInstaller.verifyInstallation(workDir);
+          DependencyInstaller.verifyInstallation(installDir);
           logger.info('✅ Installation verified');
         } else {
           logger.warn('No package manager detected, skipping dependency installation');

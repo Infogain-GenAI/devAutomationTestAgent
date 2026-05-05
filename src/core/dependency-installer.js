@@ -11,6 +11,7 @@ class DependencyInstaller {
   /**
    * Detect which package manager the project uses.
    * Checks root first, then common subdirectories.
+   * Returns { manager, installDir } where installDir is the directory containing the lock/package file.
    */
   static detectPackageManager(workDir) {
     const checks = [
@@ -21,17 +22,18 @@ class DependencyInstaller {
       { file: 'Pipfile', manager: 'pipenv' }
     ];
 
+    // Check root directory first
     for (const check of checks) {
       if (fs.existsSync(path.join(workDir, check.file))) {
         logger.info(`Detected package manager: ${check.manager} (found ${check.file})`);
-        return check.manager;
+        return { manager: check.manager, installDir: workDir };
       }
     }
 
     // Fallback: if package.json exists at root, use npm
     if (fs.existsSync(path.join(workDir, 'package.json'))) {
       logger.info('Detected package manager: npm (fallback — package.json found)');
-      return 'npm';
+      return { manager: 'npm', installDir: workDir };
     }
 
     // Search one level deep for monorepo/subdirectory projects
@@ -45,12 +47,12 @@ class DependencyInstaller {
         for (const check of checks) {
           if (fs.existsSync(path.join(subDir, check.file))) {
             logger.info(`Detected package manager: ${check.manager} (found ${entry.name}/${check.file})`);
-            return check.manager;
+            return { manager: check.manager, installDir: subDir };
           }
         }
         if (fs.existsSync(path.join(subDir, 'package.json'))) {
           logger.info(`Detected package manager: npm (found ${entry.name}/package.json)`);
-          return 'npm';
+          return { manager: 'npm', installDir: subDir };
         }
       }
     } catch (err) {
@@ -58,7 +60,7 @@ class DependencyInstaller {
     }
 
     logger.warn('No recognized package manager detected');
-    return null;
+    return { manager: null, installDir: workDir };
   }
 
   /**
