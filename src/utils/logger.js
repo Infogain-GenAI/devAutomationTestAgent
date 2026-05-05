@@ -34,18 +34,17 @@ const logger = winston.createLogger({
   ]
 });
 
-// Console output in non-production environments
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(new winston.transports.Console({
-    format: winston.format.combine(
-      winston.format.colorize(),
-      winston.format.timestamp({ format: 'HH:mm:ss' }),
-      winston.format.printf(({ timestamp, level, message, service, ...meta }) => {
-        const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
-        return `${timestamp} [${level}] ${message}${metaStr}`;
-      })
-    )
-  }));
-}
+// Console output - ALWAYS enabled (required for docker logs and CI/CD visibility)
+// In production/container environments, console output is captured by docker logs
+logger.add(new winston.transports.Console({
+  format: winston.format.combine(
+    winston.format.colorize(),
+    winston.format.timestamp({ format: 'HH:mm:ss' }),
+    winston.format.printf(({ timestamp, level, message, service, ...meta }) => {
+      const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
+      return `${timestamp} [${level}] ${message}${metaStr}`;
+    })
+  )
+}));
 
 module.exports = logger;
