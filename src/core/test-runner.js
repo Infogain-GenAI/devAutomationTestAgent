@@ -19,12 +19,34 @@ class TestRunner {
     fs.mkdirSync(resultsDir, { recursive: true });
 
     if (!fs.existsSync(testDir)) {
-      throw new Error(`Test directory does not exist: ${testDir}`);
+      logger.warn(`Test directory does not exist: ${testDir} — skipping Playwright tests`);
+      return {
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        total: 0,
+        duration: 0,
+        exitCode: 0,
+        failures: [],
+        allTests: [],
+        skippedReason: 'No generated-tests directory found'
+      };
     }
 
     const configFile = path.join(testDir, 'playwright.config.js');
     if (!fs.existsSync(configFile)) {
-      throw new Error(`Playwright config not found: ${configFile}`);
+      logger.warn(`Playwright config not found: ${configFile} — skipping Playwright tests`);
+      return {
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        total: 0,
+        duration: 0,
+        exitCode: 0,
+        failures: [],
+        allTests: [],
+        skippedReason: 'No playwright.config.js found in generated-tests'
+      };
     }
 
     logger.info(`Running Playwright tests in ${testDir}`);

@@ -39,14 +39,26 @@ class OpenAIProvider extends BaseAIProvider {
     const hasGaps = analysisResult.testGaps && analysisResult.testGaps.length > 0;
     const generateFor = analysisResult.generateFor || 'full-coverage';
     
+    // Check if this is a chunked generation request
+    const isChunked = !!analysisResult.chunkInfo;
+    
     // Different instructions for unit vs E2E tests
     const isUnitTest = ['unit', 'integration'].includes(testType);
     
     let testInstructions = '';
     
+    // Add chunk context if chunked generation
+    if (isChunked) {
+      testInstructions += `You are generating tests for CHUNK: "${analysisResult.chunkInfo.name}" (${analysisResult.chunkInfo.totalScenarios} scenarios).
+This is part of a larger test suite being generated in batches. Generate ONLY tests for the scenarios provided below.
+Do NOT generate placeholder or generic tests — be specific to the provided routes/endpoints.
+
+`;
+    }
+    
     if (isUnitTest) {
       if (hasGaps && generateFor === 'gaps-only') {
-        testInstructions = `Generate ${testType} tests ONLY for these missing test scenarios:
+        testInstructions += `Generate ${testType} tests ONLY for these missing test scenarios:
 
 `;
         analysisResult.testGaps.forEach((gap, idx) => {
@@ -61,7 +73,7 @@ IMPORTANT: Generate tests ONLY for the files listed above. Do NOT create tests f
 
 `;
       } else {
-        testInstructions = `Generate ${testType} tests for backend code using Jest/Mocha. Include:
+        testInstructions += `Generate ${testType} tests for backend code using Jest/Mocha. Include:
 - Unit tests for individual functions/methods
 - Mock external dependencies
 - Test edge cases and error handling
@@ -77,7 +89,7 @@ IMPORTANT: Generate tests ONLY for the files listed above. Do NOT create tests f
 }`;
     } else {
       if (hasGaps && generateFor === 'gaps-only') {
-        testInstructions = `Generate Playwright ${testType} tests ONLY for these missing scenarios:
+        testInstructions += `Generate Playwright ${testType} tests ONLY for these missing scenarios:
 
 `;
         analysisResult.testGaps.forEach((gap, idx) => {
@@ -99,8 +111,48 @@ IMPORTANT: Generate tests ONLY for the files listed above. Do NOT create tests f
 IMPORTANT: Generate tests ONLY for the scenarios listed above. Do NOT create tests for already covered scenarios.
 
 `;
+      } else if (isChunked) {
+        // Chunked generation with specific scenarios
+        if (testType === 'e2e' && analysisResult.routes) {
+          testInstructions += `Generate Playwright E2E tests for these specific routes/pages:
+
+`;
+          analysisResult.routes.forEach((route, idx) => {
+            const routePath = typeof route === 'string' ? route : (route.path || route.route || JSON.stringify(route));
+            testInstructions += `${idx + 1}. ${routePath}\n`;
+          });
+          testInstructions += `
+Generate comprehensive E2E tests covering:
+- Page navigation and rendering
+- User interactions (clicks, forms, inputs)
+- Assertions on visible content
+- Error states and edge cases
+Use unique and descriptive file names based on the route (e.g., "tests/e2e/dashboard.spec.js").
+
+`;
+        } else if (testType === 'api' && analysisResult.apiEndpoints) {
+          testInstructions += `Generate Playwright API tests for these specific endpoints:
+
+`;
+          analysisResult.apiEndpoints.forEach((ep, idx) => {
+            const method = typeof ep === 'string' ? 'GET' : (ep.method || 'GET');
+            const epPath = typeof ep === 'string' ? ep : (ep.path || ep.route || JSON.stringify(ep));
+            testInstructions += `${idx + 1}. ${method} ${epPath}\n`;
+          });
+          testInstructions += `
+Generate comprehensive API tests covering:
+- Success responses (status codes, response body structure)
+- Error responses (400, 401, 404, 500)
+- Request validation (missing/invalid params)
+- Edge cases
+Use unique and descriptive file names based on the resource (e.g., "tests/api/users-api.spec.js").
+
+`;
+        } else {
+          testInstructions += `Generate Playwright ${testType} tests based on the analysis. `;
+        }
       } else {
-        testInstructions = `Generate Playwright ${testType} tests based on the analysis. `;
+        testInstructions += `Generate Playwright ${testType} tests based on the analysis. `;
       }
       testInstructions += `Return JSON with:
 {

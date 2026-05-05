@@ -7,7 +7,14 @@ const configSchema = Joi.object({
     maxIterations: Joi.number().integer().min(1).max(10).default(3),
     timeoutMinutes: Joi.number().integer().min(5).max(120).default(30),
     workDir: Joi.string().default('./workspace'),
-    branch: Joi.string().default('main')
+    branch: Joi.string().default('main'),
+    fixBranchPrefix: Joi.string().default('ignis/fix'),
+    analysisPromptFile: Joi.string().allow(null, '').default(null),
+    enableBackendValidation: Joi.boolean().default(false),
+    enableBestPracticesCheck: Joi.boolean().default(true),
+    enableEndpointValidation: Joi.boolean().default(true),
+    generateAnalysisReport: Joi.boolean().default(true),
+    reportOutputDir: Joi.string().default('reports')
   }).default(),
 
   github: Joi.object({

@@ -321,12 +321,30 @@ class AgentOrchestrator {
       logger.info(`Starting test execution phase (${this.config.agent.maxIterations} max iterations)...`);
       updateStatus('testing');
 
+      // Check if there are any Playwright tests to run
+      const generatedTestDir = path.join(workDir, 'generated-tests');
+      const hasPlaywrightConfig = fs.existsSync(path.join(generatedTestDir, 'playwright.config.js'));
+      const hasAnyGeneratedTests = fs.existsSync(generatedTestDir) && 
+        fs.readdirSync(generatedTestDir).some(f => f.endsWith('.spec.js') || f.endsWith('.test.js') || f === 'tests');
+      
+      if (!hasPlaywrightConfig && !hasAnyGeneratedTests && activeTestTypes.length === 0) {
+        logger.info('⏭️  No Playwright tests to run (no generated tests, no active test types)');
+        logger.info('   Skipping test execution phase');
+      }
+
       // ── Step 9: Iteration loop ──────────────────────────────
       const maxIterations = this.config.agent.maxIterations;
       let lastTestResult = null;
       let allPassed = false;
 
-      for (let iteration = 1; iteration <= maxIterations; iteration++) {
+      // Skip iteration loop if no tests to run
+      if (!hasPlaywrightConfig && !hasAnyGeneratedTests) {
+        logger.info('No Playwright config or test files found — marking as passed');
+        allPassed = true;
+        lastTestResult = { passed: 0, failed: 0, total: 0, skipped: 0, failures: [] };
+      }
+
+      for (let iteration = 1; iteration <= maxIterations && !allPassed; iteration++) {
         this.currentIteration = iteration;
         updateStatus('testing');
         logger.info(`\n${'='.repeat(60)}\n  ITERATION ${iteration}/${maxIterations}\n${'='.repeat(60)}`);
