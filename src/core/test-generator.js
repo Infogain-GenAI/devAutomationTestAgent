@@ -29,15 +29,21 @@ class TestGenerator {
 
     // Generate unit tests (for backend) - only for gaps if testGaps provided
     for (const testType of unitTestTypes) {
-      const gaps = testGaps && testGaps[testType] ? testGaps[testType] : null;
+      // Get gaps from testGaps object
+      // - null/undefined: generate full coverage
+      // - []: skip (full coverage exists) 
+      // - [...]: generate only for these gaps
+      const gaps = testGaps && testGaps[testType] !== undefined ? testGaps[testType] : null;
       
-      if (gaps && gaps.length === 0) {
-        logger.info(`⏭️  Skipping ${testType} tests - no gaps identified`);
+      // Skip only if explicitly empty array (full coverage exists)
+      if (gaps !== null && Array.isArray(gaps) && gaps.length === 0) {
+        logger.info(`⏭️  Skipping ${testType} tests - full coverage already exists`);
         generated[testType] = { files: [], skipped: true, reason: 'Full coverage exists' };
         continue;
       }
 
-      logger.info(`Generating ${testType} tests for ${gaps ? gaps.length : 'all'} scenario(s)...`);
+      const gapCount = gaps === null ? 'all' : gaps.length;
+      logger.info(`Generating ${testType} tests for ${gapCount} scenario(s)...`);
       try {
         const result = await this.generate(workDir, analysisResult, testType, techStack, gaps);
         generated[testType] = result;
@@ -50,15 +56,21 @@ class TestGenerator {
 
     // Generate Playwright tests (for E2E/API/etc) - only for gaps if testGaps provided
     for (const testType of playwrightTestTypes) {
-      const gaps = testGaps && testGaps[testType] ? testGaps[testType] : null;
+      // Get gaps from testGaps object
+      // - null/undefined: generate full coverage
+      // - []: skip (full coverage exists)
+      // - [...]: generate only for these gaps
+      const gaps = testGaps && testGaps[testType] !== undefined ? testGaps[testType] : null;
       
-      if (gaps && gaps.length === 0) {
-        logger.info(`⏭️  Skipping ${testType} tests - no gaps identified`);
+      // Skip only if explicitly empty array (full coverage exists)
+      if (gaps !== null && Array.isArray(gaps) && gaps.length === 0) {
+        logger.info(`⏭️  Skipping ${testType} tests - full coverage already exists`);
         generated[testType] = { files: [], skipped: true, reason: 'Full coverage exists' };
         continue;
       }
 
-      logger.info(`Generating ${testType} tests for ${gaps ? gaps.length : 'all'} scenario(s)...`);
+      const gapCount = gaps === null ? 'all' : gaps.length;
+      logger.info(`Generating ${testType} tests for ${gapCount} scenario(s)...`);
       try {
         const result = await this.generate(workDir, analysisResult, testType, techStack, gaps);
         generated[testType] = result;

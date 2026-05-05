@@ -52,12 +52,14 @@ const configSchema = Joi.object({
 
   testing: Joi.object({
     types: Joi.array().items(
-      Joi.string().valid('e2e', 'api', 'visual', 'accessibility', 'performance')
-    ).default(['e2e', 'api', 'visual', 'accessibility', 'performance']),
+      Joi.string().valid('unit', 'integration', 'e2e', 'api', 'visual', 'accessibility', 'performance')
+    ).default(['unit', 'integration', 'e2e', 'api']),
     browsers: Joi.array().items(
       Joi.string().valid('chromium', 'firefox', 'webkit')
     ).default(['chromium']),
-    headless: Joi.boolean().default(true)
+    headless: Joi.boolean().default(true),
+    unitTestFramework: Joi.string().valid('auto', 'jest', 'mocha').default('auto'),
+    runUnitTests: Joi.boolean().default(true)
   }).default(),
 
   app: Joi.object({

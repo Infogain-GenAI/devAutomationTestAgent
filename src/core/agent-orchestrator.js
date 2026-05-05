@@ -203,8 +203,21 @@ class AgentOrchestrator {
         logger.info('✅ All required tests already exist - skipping test generation');
       }
       
+      // Build gaps object from testPlan for generation
+      // - null: generate full coverage (no existing tests)
+      // - []: skip generation (full coverage exists)
+      // - [...]: generate only for specific gaps
+      const gapsForGeneration = {};
+      typesToGenerate.forEach(type => {
+        if (testPlan[type].scope === 'full') {
+          gapsForGeneration[type] = null;  // Generate full coverage
+        } else if (testPlan[type].scope === 'partial') {
+          gapsForGeneration[type] = testPlan[type].targets || [];
+        }
+      });
+      
       const generated = typesToGenerate.length > 0 
-        ? await this.testGenerator.generateAll(workDir, codeAnalysis, typesToGenerate, techStack, testGaps)
+        ? await this.testGenerator.generateAll(workDir, codeAnalysis, typesToGenerate, techStack, gapsForGeneration)
         : {};
 
       // ── Step 7.5: Run Unit Tests (if enabled) ───────────────
