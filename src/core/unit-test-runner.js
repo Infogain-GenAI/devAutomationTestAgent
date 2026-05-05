@@ -49,9 +49,28 @@ class UnitTestRunner {
   async installTestFramework(workDir, framework) {
     const packageJsonPath = path.join(workDir, 'package.json');
     
+    // If no package.json exists, create a minimal one for the test runner
     if (!fs.existsSync(packageJsonPath)) {
-      logger.warn('No package.json found, skipping test framework installation');
+      logger.info('No package.json found — creating minimal package.json for test framework');
+      const minimalPkg = {
+        name: 'ignis-generated-tests',
+        version: '1.0.0',
+        private: true,
+        scripts: {
+          test: framework === 'jest' ? 'jest' : 'mocha'
+        }
+      };
+      fs.writeFileSync(packageJsonPath, JSON.stringify(minimalPkg, null, 2), 'utf-8');
+    }
+
+    // Check if framework is already globally available
+    try {
+      const { execSync } = require('child_process');
+      execSync(`npx ${framework} --version`, { cwd: workDir, stdio: 'pipe', timeout: 10000 });
+      logger.info(`${framework} is already available`);
       return;
+    } catch {
+      // Not available, need to install
     }
 
     const deps = framework === 'jest' 
@@ -64,7 +83,8 @@ class UnitTestRunner {
       const proc = spawn('npm', ['install', '--save-dev', ...deps], {
         cwd: workDir,
         shell: true,
-        stdio: 'pipe'
+        stdio: 'pipe',
+        timeout: 120000 // 2 min timeout for install
       });
 
       let stderr = '';
@@ -78,7 +98,7 @@ class UnitTestRunner {
           resolve();
         } else {
           logger.warn(`Test framework installation failed: ${stderr.slice(-200)}`);
-          resolve(); // Don't fail if installation fails - tests might still work
+          resolve(); // Don't fail if installation fails - tests might still work via global
         }
       });
 

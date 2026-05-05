@@ -159,5 +159,12 @@ export LOG_DIR="${REPO_PATH}/logs"
 echo "📝 Logs will be written to: ${LOG_DIR}"
 echo ""
 
+# Ensure git identity is configured (safety net)
+git config --global user.email "ignis-agent@automated.dev" 2>/dev/null || true
+git config --global user.name "IGNIS Automation Agent" 2>/dev/null || true
+
+# Mark workspace as safe directory for git
+git config --global --add safe.directory "${REPO_PATH}" 2>/dev/null || true
+
 # Run the CLI
 exec node /app/src/cli.js "$@"

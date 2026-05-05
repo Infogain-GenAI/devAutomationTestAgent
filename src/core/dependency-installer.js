@@ -10,6 +10,7 @@ const INSTALL_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 class DependencyInstaller {
   /**
    * Detect which package manager the project uses.
+   * Checks root first, then common subdirectories.
    */
   static detectPackageManager(workDir) {
     const checks = [
@@ -27,10 +28,33 @@ class DependencyInstaller {
       }
     }
 
-    // Fallback: if package.json exists, use npm
+    // Fallback: if package.json exists at root, use npm
     if (fs.existsSync(path.join(workDir, 'package.json'))) {
       logger.info('Detected package manager: npm (fallback — package.json found)');
       return 'npm';
+    }
+
+    // Search one level deep for monorepo/subdirectory projects
+    try {
+      const entries = fs.readdirSync(workDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (['node_modules', '.git', 'generated-tests', 'logs', 'test-results'].includes(entry.name)) continue;
+        
+        const subDir = path.join(workDir, entry.name);
+        for (const check of checks) {
+          if (fs.existsSync(path.join(subDir, check.file))) {
+            logger.info(`Detected package manager: ${check.manager} (found ${entry.name}/${check.file})`);
+            return check.manager;
+          }
+        }
+        if (fs.existsSync(path.join(subDir, 'package.json'))) {
+          logger.info(`Detected package manager: npm (found ${entry.name}/package.json)`);
+          return 'npm';
+        }
+      }
+    } catch (err) {
+      logger.debug(`Error searching subdirectories: ${err.message}`);
     }
 
     logger.warn('No recognized package manager detected');

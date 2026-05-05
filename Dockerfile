@@ -28,8 +28,21 @@ RUN npx playwright install --with-deps chromium
 RUN mkdir -p /app/workspace /app/logs /app/reports /app/test-results && \
     chown -R pwuser:pwuser /app/workspace /app/logs /app/reports /app/test-results
 
+# Configure git identity (required for committing generated tests/fixes)
+RUN git config --global user.email "sumit.joshi@infogain.com" && \
+    git config --global user.name "IGNIS Automation Agent" && \
+    git config --global init.defaultBranch main
+
+# Pre-install Jest and Mocha globally so unit test runner always has them available
+RUN npm install -g jest mocha chai
+
 # Switch to non-root user for security
 USER pwuser
+
+# Re-set git config for pwuser (global config is per-user)
+RUN git config --global user.email "sumit.joshi@infogain.com" && \
+    git config --global user.name "IGNIS Automation Agent" && \
+    git config --global init.defaultBranch main
 
 # Environment defaults for production
 ENV NODE_ENV=production \
