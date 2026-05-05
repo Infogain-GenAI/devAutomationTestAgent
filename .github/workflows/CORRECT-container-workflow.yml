@@ -83,6 +83,7 @@ jobs:
             -e REPO_BRANCH="${{ github.event.inputs.branch || github.ref_name }}" \
             -e GITHUB_TOKEN="${{ github.token }}" \
             -e GITHUB_WORKSPACE="/workspace" \
+            -e GITHUB_REPOSITORY="${{ github.repository }}" \
             -e AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.AI_PROVIDER || 'openai' }}" \
             -e AI_API_KEY="${{ secrets.AI_API_KEY }}" \
             -e OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY || secrets.AI_API_KEY }}" \

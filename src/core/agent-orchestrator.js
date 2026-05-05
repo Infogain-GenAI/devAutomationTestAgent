@@ -363,11 +363,20 @@ class AgentOrchestrator {
         };
 
         // 9b. All tests pass?
-        if (lastTestResult.failed === 0) {
-          logger.info('All tests passed!');
+        if (lastTestResult.failed === 0 && (lastTestResult.total > 0 || lastTestResult.exitCode === 0)) {
+          logger.info(`All tests passed! (${lastTestResult.passed}/${lastTestResult.total})`);
           allPassed = true;
           this.iterationHistory.push(iterationRecord);
           break;
+        }
+
+        // 9b-alt. No tests ran but Playwright errored — treat as failure
+        if (lastTestResult.total === 0 && lastTestResult.exitCode !== 0) {
+          logger.warn(`⚠️ Playwright exited with code ${lastTestResult.exitCode} but 0 tests executed`);
+          logger.warn(`   This likely means tests could not run (app not started, config error, etc.)`);
+          // Don't break — let the fix loop try to resolve
+          iterationRecord.failed = 1; // Force at least 1 failure for the fix loop
+          lastTestResult.failed = 1;
         }
 
         // 9c. At max iterations?

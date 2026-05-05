@@ -79,6 +79,7 @@ class AppLauncher {
 
   /**
    * Detect the start command from the project's config.
+   * Checks root and one-level-deep subdirectories.
    */
   _detectStartCommand(workDir, techStack, config) {
     // 1. Explicit start command
@@ -91,7 +92,7 @@ class AppLauncher {
       return 'docker-compose up -d';
     }
 
-    // 3. package.json scripts
+    // 3. package.json scripts (check root first)
     const pkgPath = path.join(workDir, 'package.json');
     if (fs.existsSync(pkgPath)) {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
@@ -99,7 +100,33 @@ class AppLauncher {
       if (pkg.scripts?.start) return 'npm start';
     }
 
-    // 4. Procfile
+    // 4. Check subdirectories for package.json with start scripts
+    try {
+      const entries = fs.readdirSync(workDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (['node_modules', '.git', 'generated-tests', 'logs', 'test-results', 'reports'].includes(entry.name)) continue;
+        
+        const subPkgPath = path.join(workDir, entry.name, 'package.json');
+        if (fs.existsSync(subPkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(subPkgPath, 'utf-8'));
+          if (pkg.scripts?.dev) {
+            this._appSubDir = entry.name;
+            logger.info(`Found start script in ${entry.name}/package.json`);
+            return `npm run dev --prefix ${entry.name}`;
+          }
+          if (pkg.scripts?.start) {
+            this._appSubDir = entry.name;
+            logger.info(`Found start script in ${entry.name}/package.json`);
+            return `npm start --prefix ${entry.name}`;
+          }
+        }
+      }
+    } catch (err) {
+      logger.debug(`Error searching subdirectories for start command: ${err.message}`);
+    }
+
+    // 5. Procfile
     const procfile = path.join(workDir, 'Procfile');
     if (fs.existsSync(procfile)) {
       const content = fs.readFileSync(procfile, 'utf-8');
@@ -107,7 +134,7 @@ class AppLauncher {
       if (webLine) return webLine.replace('web:', '').trim();
     }
 
-    // 5. Tech stack detection fallback
+    // 6. Tech stack detection fallback
     if (techStack?.backend?.startCommand) return techStack.backend.startCommand;
     if (techStack?.frontend?.startCommand) return techStack.frontend.startCommand;
 
