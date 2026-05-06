@@ -428,6 +428,7 @@ module.exports = defineConfig({
   ],
   use: {
     baseURL: process.env.APP_URL || '${baseUrl}',
+    headless: true,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure'
@@ -435,7 +436,7 @@ module.exports = defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] }
+      use: { ...devices['Desktop Chrome'], headless: true }
     }
   ],
   timeout: 30000,

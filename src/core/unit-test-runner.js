@@ -235,43 +235,95 @@ class UnitTestRunner {
       logger.info('Using generated jest.config.js');
     }
 
+    // First attempt: use project's jest config
+    let results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+
+    // If project config failed with 0 tests, determine whether it's a config issue or broken spec files
+    if (jestConfigPath && results.exitCode !== 0 && results.total === 0 && framework === 'jest') {
+      const brokenFiles = this._extractBrokenSpecFiles(results.errors, results.rawOutput, jestCwd);
+      
+      if (brokenFiles.length > 0) {
+        // Broken spec files detected — attempt to fix them, then retry WITH project config
+        logger.warn(`Found ${brokenFiles.length} broken spec file(s): ${brokenFiles.map(f => f.file).join(', ')}`);
+        const fixed = await this._fixBrokenSpecFiles(brokenFiles, jestCwd);
+        if (fixed > 0) {
+          logger.info(`Fixed ${fixed} spec file(s). Retrying with project jest config...`);
+          results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+        }
+        
+        // If still 0 tests after fixing spec files, fall back to no config
+        if (results.exitCode !== 0 && results.total === 0) {
+          logger.warn(`Still 0 tests after fixing spec files. Stderr: ${results.errors.slice(0, 300)}`);
+          logger.info('Retrying without project jest.config.js...');
+          results = await this._executeJest(framework, null, jestCwd, dirs);
+        }
+      } else {
+        // No broken spec files identified — likely a config/transform issue
+        logger.warn(`Jest config error (0 tests ran). Stderr: ${results.errors.slice(0, 500)}`);
+        logger.info('Retrying without project jest.config.js (using testMatch patterns instead)...');
+        results = await this._executeJest(framework, null, jestCwd, dirs);
+      }
+    }
+    
+    // If tests ran but some failed due to broken spec files, attempt fix and retry
+    if (results.exitCode !== 0 && results.total > 0 && results.failed > 0 && jestConfigPath) {
+      const brokenFiles = this._extractBrokenSpecFiles(results.errors, results.rawOutput, jestCwd);
+      if (brokenFiles.length > 0) {
+        logger.warn(`${brokenFiles.length} spec file(s) have errors: ${brokenFiles.map(f => f.file).join(', ')}`);
+        const fixed = await this._fixBrokenSpecFiles(brokenFiles, jestCwd);
+        if (fixed > 0) {
+          logger.info(`Fixed ${fixed} spec file(s). Re-running tests with project config...`);
+          results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+        }
+      }
+    }
+
+    if (results.exitCode === 0) {
+      logger.info(`✅ All unit tests passed (${results.passed}/${results.total})`);
+    } else if (results.total === 0) {
+      logger.warn(`⚠️ Jest exited with errors but ran 0 tests. Stderr: ${results.errors.slice(0, 800)}`);
+    } else {
+      logger.warn(`❌ Unit tests failed: ${results.failed}/${results.total} failures`);
+    }
+
+    return results;
+  }
+
+  /**
+   * Execute jest/mocha and return parsed results
+   */
+  _executeJest(framework, configPath, cwd, dirs) {
     return new Promise((resolve, reject) => {
       let args;
       if (framework === 'jest') {
         args = ['--json', '--forceExit'];
-        if (jestConfigPath) {
-          // Use relative config path from cwd
-          const relConfigPath = path.relative(jestCwd, jestConfigPath);
+        if (configPath) {
+          const relConfigPath = path.relative(cwd, configPath);
           args.push('--config', relConfigPath || 'jest.config.js');
         } else {
-          // No config — provide testMatch and patterns inline
-          // Paths must be relative to jestCwd (where jest runs from)
-          const relDirs = dirs.map(d => path.relative(jestCwd, d).replace(/\\/g, '/'));
-          let dirGlob;
-          if (relDirs.length === 1) {
-            dirGlob = relDirs[0];
-          } else {
-            dirGlob = `{${relDirs.join(',')}}`;
+          // No config — pass test files directly to Jest as path patterns
+          // Also pass an empty config to prevent Jest auto-detecting project jest.config.js
+          args.push('--config', '{}');
+          const relDirs = dirs.map(d => path.relative(cwd, d).replace(/\\/g, '/'));
+          for (const relDir of relDirs) {
+            args.push(relDir);
           }
-          args.push('--testMatch', `**/${dirGlob}/**/*.{test,spec}.{js,ts,jsx,tsx}`);
-          // Only ignore node_modules and generated-tests spec files (those are Playwright e2e)
           args.push('--testPathIgnorePatterns', '/node_modules/', 'generated-tests/tests/.*.spec\\.');
         }
       } else {
-        // Mocha: pass all test files directly
         const testFileGlobs = dirs.map(d => `"${path.join(d, '**/*.test.js')}"`);
         args = ['--reporter', 'json', ...testFileGlobs];
       }
 
-      const fullArgs = framework === 'jest' 
+      const fullArgs = framework === 'jest'
         ? ['jest', ...args]
         : ['mocha', ...args];
 
       const proc = spawn('npx', fullArgs, {
-        cwd: jestCwd,
+        cwd,
         shell: true,
         stdio: 'pipe',
-        timeout: 5 * 60 * 1000 // 5 minutes
+        timeout: 5 * 60 * 1000
       });
 
       let stdout = '';
@@ -280,7 +332,6 @@ class UnitTestRunner {
       proc.stdout.on('data', (data) => {
         const text = data.toString();
         stdout += text;
-        // Log progress
         if (text.includes('PASS') || text.includes('FAIL')) {
           logger.info(text.trim());
         }
@@ -292,16 +343,7 @@ class UnitTestRunner {
 
       proc.on('close', (code) => {
         logger.info(`Unit tests exited with code ${code}`);
-
-        // Parse results
         const results = this.parseTestResults(stdout, stderr, framework, code);
-        
-        if (code === 0) {
-          logger.info(`✅ All unit tests passed (${results.passed}/${results.total})`);
-        } else {
-          logger.warn(`❌ Unit tests failed: ${results.failed}/${results.total} failures`);
-        }
-
         resolve(results);
       });
 
@@ -477,6 +519,269 @@ class UnitTestRunner {
     fs.writeFileSync(jsonFile, JSON.stringify(results, null, 2), 'utf-8');
 
     return logFile;
+  }
+
+  /**
+   * Extract broken spec files from Jest error output.
+   * Detects: SyntaxError, Cannot find module, import/export errors in test files.
+   */
+  _extractBrokenSpecFiles(stderr, stdout, cwd) {
+    const brokenFiles = [];
+    
+    // Method 1 (preferred): Parse Jest JSON output for suites that "failed to run"
+    try {
+      const jsonMatch = stdout.match(/\{.*"success".*\}/s);
+      if (jsonMatch) {
+        const json = JSON.parse(jsonMatch[0]);
+        if (json.testResults) {
+          for (const suite of json.testResults) {
+            if (suite.message && /Test suite failed to run/.test(suite.message)) {
+              const file = suite.name ? path.relative(cwd, suite.name).replace(/\\/g, '/') : null;
+              if (file) {
+                const errorType = this._extractErrorType(suite.message);
+                const missingModule = suite.message.match(/Cannot find module ['"]([^'"]+)['"]/)?.[1] || null;
+                brokenFiles.push({ file, error: errorType, missingModule, context: suite.message.slice(0, 500) });
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // JSON parse failed, fall back to regex
+    }
+
+    // Method 2: Regex-based fallback (only if JSON parsing didn't find anything)
+    if (brokenFiles.length === 0) {
+      const combinedOutput = (stderr || '');
+      let match;
+      
+      // Pattern: "FAIL path/to/file.test.js\n  ● Test suite failed to run"
+      const suiteFailPattern = /FAIL\s+([^\n]+\.(?:test|spec)\.(?:js|ts|jsx|tsx))\s*\n[^\n]*Test suite failed to run/g;
+      while ((match = suiteFailPattern.exec(combinedOutput)) !== null) {
+        const file = match[1].trim().replace(/\\/g, '/');
+        if (!brokenFiles.some(b => b.file === file)) {
+          const errorContext = combinedOutput.slice(match.index, match.index + 500);
+          brokenFiles.push({ file, error: this._extractErrorType(errorContext), context: errorContext.slice(0, 300) });
+        }
+      }
+
+      // Pattern: Cannot find module in a test file
+      const moduleErrorPattern = /Cannot find module ['"]([^'"]+)['"] from ['"]([^'"]*(?:test|spec)[^'"]*)['"]/g;
+      while ((match = moduleErrorPattern.exec(combinedOutput)) !== null) {
+        const file = match[2].trim().replace(/\\/g, '/');
+        const missingModule = match[1];
+        if (!brokenFiles.some(b => b.file === file)) {
+          brokenFiles.push({ file, error: 'missing-module', missingModule, context: match[0] });
+        }
+      }
+
+      // Pattern: SyntaxError with file path
+      const syntaxPattern = /SyntaxError:\s*([^\n]*(?:test|spec)[^\n]*\.(?:js|ts|jsx|tsx))[:\s]/g;
+      while ((match = syntaxPattern.exec(combinedOutput)) !== null) {
+        const file = match[1].trim().replace(/\\/g, '/');
+        if (!brokenFiles.some(b => b.file === file)) {
+          brokenFiles.push({ file, error: 'syntax-error', context: combinedOutput.slice(match.index, match.index + 200) });
+        }
+      }
+
+      // Pattern: transform/parse error referencing a test file
+      const transformPattern = /(?:Could not|Failed to) (?:parse|transform)\s+([^\n]*(?:test|spec)[^\n]*\.(?:js|ts|jsx|tsx))/g;
+      while ((match = transformPattern.exec(combinedOutput)) !== null) {
+        const file = match[1].trim().replace(/\\/g, '/');
+        if (!brokenFiles.some(b => b.file === file)) {
+          brokenFiles.push({ file, error: 'transform-error', context: match[0] });
+        }
+      }
+    }
+
+    return brokenFiles;
+  }
+
+  /**
+   * Extract the error type from error context
+   */
+  _extractErrorType(context) {
+    if (/Cannot find module/.test(context)) return 'missing-module';
+    if (/Cannot use import|import statement outside/i.test(context)) return 'esm-import';
+    if (/ECMAScript Modules|esm|ES modules/i.test(context)) return 'esm-import';
+    if (/unexpected token/i.test(context) && /import|export/.test(context)) return 'esm-import';
+    if (/SyntaxError/.test(context)) return 'syntax-error';
+    if (/unexpected token/i.test(context)) return 'syntax-error';
+    if (/is not defined/.test(context)) return 'undefined-reference';
+    if (/Could not|Failed to.*(?:parse|transform)/i.test(context)) return 'transform-error';
+    return 'unknown';
+  }
+
+  /**
+   * Attempt to fix broken spec files with common automated fixes.
+   * Returns the number of files successfully fixed.
+   */
+  async _fixBrokenSpecFiles(brokenFiles, cwd) {
+    let fixed = 0;
+
+    for (const broken of brokenFiles) {
+      const filePath = path.isAbsolute(broken.file) 
+        ? broken.file 
+        : path.join(cwd, broken.file);
+
+      if (!fs.existsSync(filePath)) {
+        logger.warn(`Broken file not found: ${broken.file} — skipping`);
+        continue;
+      }
+
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        let fixedContent = content;
+        let wasFixed = false;
+
+        switch (broken.error) {
+          case 'missing-module': {
+            // If missing a relative import, check if the path is wrong
+            if (broken.missingModule && broken.missingModule.startsWith('.')) {
+              // Try common path corrections (e.g., ../src/ → ../../src/)
+              const corrected = this._tryFixRelativeImport(filePath, broken.missingModule, cwd);
+              if (corrected && corrected !== broken.missingModule) {
+                fixedContent = content.replace(
+                  new RegExp(`(['"])${broken.missingModule.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(['"])`, 'g'),
+                  `$1${corrected}$2`
+                );
+                wasFixed = true;
+                logger.info(`  Fixed import path: ${broken.missingModule} → ${corrected} in ${broken.file}`);
+              }
+            }
+            break;
+          }
+
+          case 'esm-import': {
+            // Convert ESM imports to CommonJS requires
+            if (content.includes('import ') && !content.includes('require(')) {
+              fixedContent = this._convertEsmToCommonjs(content);
+              wasFixed = fixedContent !== content;
+              if (wasFixed) {
+                logger.info(`  Converted ESM imports to CommonJS in ${broken.file}`);
+              }
+            }
+            break;
+          }
+
+          case 'syntax-error': {
+            // Check for common syntax issues
+            // Missing semicolons after imports, unclosed brackets, etc.
+            const syntaxFix = this._tryFixSyntax(content, broken.context);
+            if (syntaxFix && syntaxFix !== content) {
+              fixedContent = syntaxFix;
+              wasFixed = true;
+              logger.info(`  Fixed syntax error in ${broken.file}`);
+            }
+            break;
+          }
+
+          case 'transform-error': {
+            // If Jest can't transform the file, it might be using JSX/TSX without proper config
+            // Add a @jest-environment jsdom comment or convert JSX
+            if ((filePath.endsWith('.tsx') || filePath.endsWith('.jsx')) && !content.includes('@jest-environment')) {
+              fixedContent = '/**\n * @jest-environment jsdom\n */\n' + content;
+              wasFixed = true;
+              logger.info(`  Added @jest-environment jsdom to ${broken.file}`);
+            }
+            break;
+          }
+        }
+
+        if (wasFixed) {
+          fs.writeFileSync(filePath, fixedContent, 'utf-8');
+          fixed++;
+        }
+      } catch (err) {
+        logger.warn(`Failed to fix ${broken.file}: ${err.message}`);
+      }
+    }
+
+    return fixed;
+  }
+
+  /**
+   * Try to fix a relative import path by searching for the target module
+   */
+  _tryFixRelativeImport(testFile, importPath, cwd) {
+    const testDir = path.dirname(testFile);
+    const resolvedTarget = path.resolve(testDir, importPath);
+    
+    // Check common extensions
+    const extensions = ['', '.js', '.ts', '.jsx', '.tsx', '/index.js', '/index.ts'];
+    for (const ext of extensions) {
+      if (fs.existsSync(resolvedTarget + ext)) {
+        return importPath; // Path is actually correct
+      }
+    }
+
+    // Try to find the module in common locations relative to cwd
+    const moduleName = path.basename(importPath);
+    const searchDirs = ['src', 'lib', 'app', 'utils', 'components', 'services', ''];
+    
+    for (const dir of searchDirs) {
+      for (const ext of extensions) {
+        const candidate = path.join(cwd, dir, moduleName + ext);
+        if (fs.existsSync(candidate)) {
+          // Found it — compute relative path from test file
+          let relativePath = path.relative(testDir, candidate.replace(/\.(js|ts|jsx|tsx)$/, '')).replace(/\\/g, '/');
+          if (!relativePath.startsWith('.')) {
+            relativePath = './' + relativePath;
+          }
+          return relativePath;
+        }
+      }
+    }
+
+    return null; // Cannot resolve
+  }
+
+  /**
+   * Convert ESM import/export statements to CommonJS
+   */
+  _convertEsmToCommonjs(content) {
+    let result = content;
+    
+    // import { x, y } from 'module' → const { x, y } = require('module')
+    result = result.replace(
+      /import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g,
+      "const {$1} = require('$2')"
+    );
+    
+    // import x from 'module' → const x = require('module')
+    result = result.replace(
+      /import\s+(\w+)\s+from\s*['"]([^'"]+)['"]/g,
+      "const $1 = require('$2')"
+    );
+    
+    // import * as x from 'module' → const x = require('module')
+    result = result.replace(
+      /import\s*\*\s*as\s+(\w+)\s+from\s*['"]([^'"]+)['"]/g,
+      "const $1 = require('$2')"
+    );
+
+    // export default → module.exports =
+    result = result.replace(/export\s+default\s+/g, 'module.exports = ');
+    
+    // export { x } → (remove, typically not needed in test files)
+    result = result.replace(/export\s*\{[^}]*\}\s*;?\s*\n?/g, '');
+    
+    return result;
+  }
+
+  /**
+   * Attempt basic syntax fixes based on error context
+   */
+  _tryFixSyntax(content, errorContext) {
+    // If error mentions "Unexpected token" after an import, likely ESM issue
+    if (/Unexpected token.*import|Cannot use import/.test(errorContext)) {
+      return this._convertEsmToCommonjs(content);
+    }
+    
+    // If error is about optional chaining (?.) in older Node, can't easily fix
+    // If error is about decorators, can't easily fix
+    
+    return null;
   }
 
   /**

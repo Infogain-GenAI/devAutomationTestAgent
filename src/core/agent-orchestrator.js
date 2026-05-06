@@ -320,8 +320,13 @@ class AgentOrchestrator {
                   }
                   testRoot = parent;
                 }
-                if (!testDirs.includes(testRoot) && testRoot !== workDir) {
-                  testDirs.push(testRoot);
+                // Validate the path exists and isn't already covered by an existing test dir
+                if (!testDirs.includes(testRoot) && testRoot !== workDir && fs.existsSync(testRoot)) {
+                  // Skip if this dir is a child of an already-added test dir
+                  const alreadyCovered = testDirs.some(existing => testRoot.startsWith(existing + path.sep));
+                  if (!alreadyCovered) {
+                    testDirs.push(testRoot);
+                  }
                 }
               }
             }
@@ -351,6 +356,74 @@ class AgentOrchestrator {
             unitTestResults = await this.unitTestRunner.runTests(workDir, testDirs, {
               detectedFrameworks: [...existingTestFrameworks]
             });
+            
+            // ── Unit Test Self-Healing Loop ─────────────────────
+            // If unit tests fail, use AI to fix app code and re-run
+            const unitMaxIterations = Math.min(this.config.agent.maxIterations, 3);
+            let unitIteration = 0;
+            
+            while (unitTestResults.failed > 0 && unitTestResults.total > 0 && 
+                   unitTestResults.failures && unitTestResults.failures.length > 0 &&
+                   unitIteration < unitMaxIterations) {
+              unitIteration++;
+              logger.info(`\n── Unit Test Fix Iteration ${unitIteration}/${unitMaxIterations} ──`);
+              logger.info(`   ${unitTestResults.failed} test(s) failing — analyzing with AI...`);
+              
+              // Analyze unit test failures (adapt failures format for issueFixer)
+              const unitFailureContext = {
+                failures: unitTestResults.failures.map(f => ({
+                  testName: f.testName || f.title || 'Unknown test',
+                  file: f.file || 'unknown',
+                  error: f.error || 'Unknown error',
+                  type: 'unit-test'
+                })),
+                passed: unitTestResults.passed,
+                failed: unitTestResults.failed,
+                total: unitTestResults.total
+              };
+              
+              try {
+                updateStatus('fixing-unit-tests');
+                const failureAnalysis = await this.issueFixer.analyzeFailures(
+                  unitFailureContext, codeAnalysis, workDir
+                );
+                
+                // Generate and apply fixes to app code
+                const fixResult = await this.issueFixer.generateAndApplyFixes(
+                  failureAnalysis, workDir, {
+                    previousFailCount: unitTestResults.failed
+                  }
+                );
+                
+                if (fixResult.applied.length === 0) {
+                  logger.info('   AI could not generate fixes — stopping unit test iteration');
+                  break;
+                }
+                
+                logger.info(`   Applied ${fixResult.applied.length} fix(es). Re-running unit tests...`);
+                
+                // Track fixed files
+                for (const fix of fixResult.applied) {
+                  if (!fix.file.startsWith('generated-tests/')) {
+                    this.appFixFiles.push(fix.file);
+                  }
+                }
+                
+                // Re-run unit tests with same config
+                unitTestResults = await this.unitTestRunner.runTests(workDir, testDirs, {
+                  detectedFrameworks: [...existingTestFrameworks]
+                });
+                
+                if (unitTestResults.failed === 0) {
+                  logger.info(`   ✅ All unit tests pass after ${unitIteration} fix iteration(s)!`);
+                } else {
+                  logger.warn(`   Still ${unitTestResults.failed} failure(s) after fix iteration ${unitIteration}`);
+                }
+              } catch (fixErr) {
+                logger.warn(`   Fix iteration failed: ${fixErr.message}`);
+                break;
+              }
+            }
           }
           
           // Write results to log

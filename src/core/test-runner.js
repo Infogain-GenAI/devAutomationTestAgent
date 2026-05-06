@@ -56,7 +56,7 @@ class TestRunner {
 
     const args = [
       'playwright', 'test',
-      '--config', `"${configFile}"`
+      '--config', 'playwright.config.js'
     ];
 
     if (config.grep) {
@@ -68,14 +68,16 @@ class TestRunner {
       let stderr = '';
 
       const proc = spawn('npx', args, {
-        cwd: workDir,
+        cwd: testDir,
         shell: true,
         stdio: 'pipe',
         timeout: TEST_TIMEOUT,
         env: {
           ...process.env,
           APP_URL: config.appUrl || process.env.APP_URL || 'http://localhost:3000',
-          CI: 'true'
+          CI: 'true',
+          PLAYWRIGHT_HEADLESS: '1',
+          DISPLAY: process.env.DISPLAY || ''
         }
       });
 
@@ -91,7 +93,7 @@ class TestRunner {
         logger.info(`Playwright exited with code ${code}`);
 
         // Write raw output to log files for GitHub Actions
-        const logDir = process.env.LOG_DIR || 'logs';
+        const logDir = process.env.LOG_DIR || path.join(workDir, 'logs');
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const testLogFile = path.join(logDir, `test-run-${timestamp}.log`);
         
@@ -225,15 +227,35 @@ class TestRunner {
     }
 
     // Detect installed playwright CLI version to avoid mismatch
+    // IMPORTANT: Run from tmpdir to avoid picking up project's local @playwright/test
+    // (project might have a newer version than the container's pre-installed browsers)
     let playwrightVersion = '';
     try {
       const { execSync } = require('child_process');
-      const versionOutput = execSync('npx playwright --version', { stdio: 'pipe', timeout: 10000 }).toString().trim();
-      // Output format: "Version 1.50.0" or just "1.50.0"
-      const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+)/);
-      if (versionMatch) {
-        playwrightVersion = versionMatch[1];
-        logger.info(`Detected Playwright CLI version: ${playwrightVersion}`);
+      const os = require('os');
+      
+      // First: try to get the container's global playwright-core version (matches pre-installed browsers)
+      try {
+        const globalVersion = execSync(
+          'node -e "try{console.log(require(\'playwright-core/package.json\').version)}catch(e){}"',
+          { stdio: 'pipe', timeout: 10000, cwd: os.tmpdir() }
+        ).toString().trim();
+        if (globalVersion && /^\d+\.\d+\.\d+$/.test(globalVersion)) {
+          playwrightVersion = globalVersion;
+          logger.info(`Detected container Playwright version: ${playwrightVersion}`);
+        }
+      } catch (_) {}
+
+      // Fallback: npx playwright --version from tmpdir (avoids project's local version)
+      if (!playwrightVersion) {
+        const versionOutput = execSync('npx playwright --version', {
+          stdio: 'pipe', timeout: 15000, cwd: os.tmpdir()
+        }).toString().trim();
+        const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+)/);
+        if (versionMatch) {
+          playwrightVersion = versionMatch[1];
+          logger.info(`Detected Playwright CLI version: ${playwrightVersion}`);
+        }
       }
     } catch (e) {
       logger.warn(`Could not detect playwright version: ${e.message}`);

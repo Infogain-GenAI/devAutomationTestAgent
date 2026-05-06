@@ -22,11 +22,21 @@ class IssueFixer {
     // Gather source code for the failing files
     const sourceCode = {};
     for (const failure of categorized) {
-      // Read the test file
-      if (failure.file) {
-        const testFilePath = path.join(workDir, 'generated-tests', failure.file);
+      if (!failure.file) continue;
+      
+      // Try multiple locations for the test file
+      const candidates = [
+        path.join(workDir, 'generated-tests', failure.file),
+        path.join(workDir, failure.file),
+        failure.file // absolute path
+      ];
+      
+      for (const testFilePath of candidates) {
         if (fs.existsSync(testFilePath)) {
-          sourceCode[`test:${failure.file}`] = fs.readFileSync(testFilePath, 'utf-8');
+          try {
+            sourceCode[`test:${failure.file}`] = fs.readFileSync(testFilePath, 'utf-8');
+          } catch {}
+          break;
         }
       }
     }
