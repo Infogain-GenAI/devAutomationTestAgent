@@ -161,6 +161,11 @@ class TestRunner {
 
         const parsed = TestRunner.parseResults(jsonResults, code);
         
+        // Always log stderr when tests fail or 0 tests executed (aids debugging)
+        if (code !== 0 && stderr.trim()) {
+          logger.warn(`Playwright stderr (exit ${code}): ${stderr.slice(0, 800)}`);
+        }
+        
         // Write detailed test results to separate log file
         TestRunner.writeDetailedTestLog(parsed, workDir, testLogFile);
         
@@ -176,7 +181,7 @@ class TestRunner {
 
   /**
    * Ensure @playwright/test is resolvable from the generated-tests directory.
-   * If the project already has it in node_modules, symlink or skip. Otherwise install.
+   * Matches the installed playwright CLI version to avoid mismatches.
    */
   static async _ensurePlaywrightInstalled(testDir, workDir) {
     // Check if @playwright/test is already resolvable from testDir
@@ -204,17 +209,7 @@ class TestRunner {
     }
 
     if (existingPath) {
-      // Create a package.json in generated-tests that redirects resolution
-      const genPkgPath = path.join(testDir, 'package.json');
-      if (!fs.existsSync(genPkgPath)) {
-        fs.writeFileSync(genPkgPath, JSON.stringify({
-          name: 'ignis-generated-tests',
-          private: true,
-          dependencies: {}
-        }, null, 2));
-      }
-
-      // Create node_modules symlink or install locally
+      // Create node_modules symlink to reuse existing installation
       const genNodeModules = path.join(testDir, 'node_modules');
       if (!fs.existsSync(genNodeModules)) {
         try {
@@ -229,35 +224,54 @@ class TestRunner {
       }
     }
 
-    // Fallback: install @playwright/test directly in generated-tests
-    logger.info('Installing @playwright/test in generated-tests directory...');
+    // Detect installed playwright CLI version to avoid mismatch
+    let playwrightVersion = '';
+    try {
+      const { execSync } = require('child_process');
+      const versionOutput = execSync('npx playwright --version', { stdio: 'pipe', timeout: 10000 }).toString().trim();
+      // Output format: "Version 1.50.0" or just "1.50.0"
+      const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+)/);
+      if (versionMatch) {
+        playwrightVersion = versionMatch[1];
+        logger.info(`Detected Playwright CLI version: ${playwrightVersion}`);
+      }
+    } catch (e) {
+      logger.warn(`Could not detect playwright version: ${e.message}`);
+    }
+
+    // Install @playwright/test at the matching version
+    const packageSpec = playwrightVersion ? `@playwright/test@${playwrightVersion}` : '@playwright/test';
+    logger.info(`Installing ${packageSpec} in generated-tests directory...`);
+    
     const genPkgPath = path.join(testDir, 'package.json');
     if (!fs.existsSync(genPkgPath)) {
       fs.writeFileSync(genPkgPath, JSON.stringify({
         name: 'ignis-generated-tests',
         private: true,
-        dependencies: { '@playwright/test': '*' }
+        dependencies: {}
       }, null, 2));
     }
 
     return new Promise((resolve, reject) => {
-      const proc = spawn('npm', ['install', '--no-save', '@playwright/test'], {
+      const proc = spawn('npm', ['install', '--no-save', packageSpec], {
         cwd: testDir,
         shell: true,
         stdio: 'pipe',
         timeout: 60000,
         env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }
       });
+      let stderr = '';
+      proc.stderr.on('data', d => stderr += d.toString());
       proc.on('close', (code) => {
         if (code === 0) {
-          logger.info('@playwright/test installed in generated-tests');
+          logger.info(`${packageSpec} installed in generated-tests`);
         } else {
-          logger.warn(`@playwright/test install exited with code ${code} — tests may fail`);
+          logger.warn(`${packageSpec} install exited with code ${code}: ${stderr.slice(0, 200)}`);
         }
         resolve();
       });
       proc.on('error', (err) => {
-        logger.warn(`Failed to install @playwright/test: ${err.message}`);
+        logger.warn(`Failed to install ${packageSpec}: ${err.message}`);
         resolve(); // don't block — let tests fail with the original error
       });
     });

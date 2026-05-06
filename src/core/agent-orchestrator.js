@@ -270,10 +270,15 @@ class AgentOrchestrator {
           // Collect ALL test directories (generated + existing project tests)
           const testDirs = [];
           
-          // 1. Check generated tests
+          // 1. Check generated tests (ONLY if they contain .test.js files, not Playwright specs)
           const generatedTestDir = path.join(workDir, 'generated-tests/tests');
           if (fs.existsSync(generatedTestDir)) {
-            testDirs.push(generatedTestDir);
+            // Only include if it has .test.js files (unit tests), not just .spec.js (Playwright)
+            const hasUnitTestFiles = fs.readdirSync(generatedTestDir, { recursive: true })
+              .some(f => typeof f === 'string' && (f.endsWith('.test.js') || f.endsWith('.test.ts')));
+            if (hasUnitTestFiles) {
+              testDirs.push(generatedTestDir);
+            }
           }
           
           // 2. Add existing project test directories (root + subdirectories)

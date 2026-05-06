@@ -1,22 +1,20 @@
-name: 'IGNIS Automation Test Agent - CORRECTED'
+name: 'IGNIS Automation Test Agent'
 
 # ============================================================================
-# COPY THIS CORRECTED VERSION TO YOUR TEST REPOSITORY
-# Replace your existing workflow with this one
+# TRIGGER CONFIGURATION
 # ============================================================================
-
 on:
-  # push:
-  #   branches:
-  #     - '**'
+  push:
+    branches:
+      - '**'
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch to test'
+        description: 'Branch to test (the base branch for fix PRs)'
         required: false
         default: 'main'
       ai-provider:
-        description: 'AI provider'
+        description: 'AI provider (claude, openai, gemini)'
         required: false
         default: 'openai'
         type: choice
@@ -24,10 +22,73 @@ on:
           - openai
           - claude
           - gemini
+      max-iterations:
+        description: 'Maximum fix-and-retest iterations'
+        required: false
+        default: '3'
+      test-types:
+        description: 'Comma-separated test types (unit,e2e,api,integration,visual,accessibility,performance)'
+        required: false
+        default: 'unit,e2e,api'
+      auto-start-app:
+        description: 'Auto-start the target app from the repo'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      app-start-command:
+        description: 'Custom command to start the target app'
+        required: false
+      app-url:
+        description: 'URL of the running target application (skip auto-start)'
+        required: false
+
+# ============================================================================
+# SECRETS & VARIABLES REQUIRED
+# ============================================================================
+# Repository Secrets (Settings → Secrets and variables → Actions → Secrets):
+#   - ACR_REGISTRY_URL    : Azure Container Registry URL (e.g., myregistry.azurecr.io)
+#   - ACR_USERNAME        : ACR username / service principal client ID
+#   - ACR_PASSWORD        : ACR password / service principal client secret
+#   - AI_API_KEY          : AI provider API key (OpenAI/Claude/Gemini)
+#   - APP_SECRETS         : (Optional) JSON string of app environment variables
+#
+# Repository Variables (Settings → Secrets and variables → Actions → Variables):
+#   - ACR_IMAGE_NAME      : Container image name (default: automationtestagent)
+#   - ACR_IMAGE_TAG       : Image tag (default: latest)
+#   - AI_PROVIDER         : Default AI provider (default: openai)
+#   - TEST_TYPES          : Default test types (default: unit,e2e,api)
+#   - AUTO_START_APP      : Auto-start flag (default: true)
+#
+# ============================================================================
+# PERMISSIONS REQUIRED
+# ============================================================================
+# This workflow requires the following permissions to function properly:
+#   - contents: write       → Push commits and create branches
+#   - pull-requests: write  → Create pull requests with test results
+#   - issues: write        → Create issues for test failures (optional)
+#
+# These are configured in the job's 'permissions' section below.
+# ============================================================================
 
 jobs:
   run-automation-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    # ============================================================================
+    # PERMISSIONS CONFIGURATION
+    # ============================================================================
+    # These permissions allow the agent to create PRs and push branches
+    # Required for: Branch creation, PR creation, commit pushing
+    # ============================================================================
+    permissions:
+      contents: write        # Required to push commits and branches
+      pull-requests: write   # Required to create pull requests
+      issues: write         # Required for issue creation (optional)
+      checks: write         # Required for check runs (optional)
     
     steps:
       - name: Checkout repository
@@ -42,46 +103,63 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Pull IGNIS Automation Agent from ACR
+      - name: Pull IGNIS Automation Agent Image
         run: |
           ACR_REGISTRY="${{ secrets.ACR_REGISTRY_URL }}"
           IMAGE_NAME="${{ vars.ACR_IMAGE_NAME || 'automationtestagent' }}"
-          IMAGE_TAG="${{ vars.ACR_IMAGE_TAG || 'latest_v0' }}"
+          IMAGE_TAG="${{ vars.ACR_IMAGE_TAG || 'latest' }}"
           FULL_IMAGE="${ACR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
           
           echo "🐳 Pulling container image: ${FULL_IMAGE}"
           docker pull "${FULL_IMAGE}"
+          echo "✅ Image pulled successfully"
 
-      # ============================================================================
-      # CRITICAL FIXES APPLIED HERE:
-      # 1. Removed: -w /workspace (use container's WORKDIR /app)
-      # 2. Fixed: REPO_PATH="/workspace" (container path, not host path)
-      # 3. Added: GITHUB_WORKSPACE="/workspace"
-      # 4. Added: Better error output with docker logs
-      # ============================================================================
+      # ════════════════════════════════════════════════════════════════════════
+      # RUN IGNIS AUTOMATION TEST AGENT
+      # ════════════════════════════════════════════════════════════════════════
+      # CRITICAL: Container runs in DETACHED mode (-d) so we can:
+      #   1. Stream logs in real-time with docker logs -f
+      #   2. Wait for completion with docker wait
+      #   3. Get the actual exit code from the agent process
+      #   4. Access logs/results written to workspace volume
+      #
+      # The container entrypoint sets LOG_DIR to /workspace/logs so all logs
+      # are written to the mounted volume and accessible after container exits.
+      # ════════════════════════════════════════════════════════════════════════
       
-      - name: Run IGNIS Automation Test Agent Container
+      - name: Run IGNIS Automation Test Agent
         id: run-agent
-        continue-on-error: true
         run: |
           ACR_REGISTRY="${{ secrets.ACR_REGISTRY_URL }}"
           IMAGE_NAME="${{ vars.ACR_IMAGE_NAME || 'automationtestagent' }}"
-          IMAGE_TAG="${{ vars.ACR_IMAGE_TAG || 'latest_v0' }}"
+          IMAGE_TAG="${{ vars.ACR_IMAGE_TAG || 'latest' }}"
           FULL_IMAGE="${ACR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
           
-          echo "🚀 Starting IGNIS Automation Test Agent..."
-          echo "📦 Image: ${FULL_IMAGE}"
-          echo "📁 Test Repository: ${{ github.workspace }}"
-          echo "🔧 AI Provider: ${{ github.event.inputs.ai-provider || vars.AI_PROVIDER || 'openai' }}"
+          echo "════════════════════════════════════════════════════════════════════════"
+          echo "🚀 IGNIS Automation Test Agent - Starting Execution"
+          echo "════════════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "📦 Image:        ${FULL_IMAGE}"
+          echo "📁 Workspace:    ${{ github.workspace }}"
+          echo "🌿 Branch:       ${{ github.event.inputs.branch || github.ref_name }}"
+          echo "🤖 AI Provider:  ${{ github.event.inputs.ai-provider || vars.AI_PROVIDER || 'openai' }}"
+          echo "🧪 Test Types:   ${{ github.event.inputs.test-types || vars.TEST_TYPES || 'unit,e2e,api' }}"
+          echo "🔄 Iterations:   ${{ github.event.inputs.max-iterations || vars.MAX_ITERATIONS || '3' }}"
+          echo ""
+          echo "════════════════════════════════════════════════════════════════════════"
           echo ""
           
-          # Run container without --rm first to capture logs on failure
+          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          # Start container in DETACHED mode (-d)
+          # This allows us to stream logs AND capture exit code properly
+          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
           CONTAINER_ID=$(docker run -d \
-            --name ignis-automation-agent \
+            --name ignis-agent \
             -v "${{ github.workspace }}:/workspace" \
             -e REPO_PATH="/workspace" \
             -e REPO_BRANCH="${{ github.event.inputs.branch || github.ref_name }}" \
-            -e GITHUB_TOKEN="${{ github.token }}" \
+            -e GITHUB_TOKEN="${{ secrets.MY_GITHUB_PAT || github.token }}" \
+            -e GITHUB_PAT="${{ secrets.MY_GITHUB_PAT || '' }}" \
             -e GITHUB_WORKSPACE="/workspace" \
             -e GITHUB_REPOSITORY="${{ github.repository }}" \
             -e AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.AI_PROVIDER || 'openai' }}" \
@@ -89,58 +167,354 @@ jobs:
             -e OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY || secrets.AI_API_KEY }}" \
             -e CLAUDE_API_KEY="${{ secrets.CLAUDE_API_KEY || secrets.AI_API_KEY }}" \
             -e GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY || secrets.AI_API_KEY }}" \
-            -e MAX_ITERATIONS="${{ vars.MAX_ITERATIONS || '3' }}" \
-            -e TEST_TYPES="${{ vars.TEST_TYPES || 'e2e,api,visual,accessibility,performance' }}" \
-            -e APP_URL="${{ vars.APP_URL || '' }}" \
-            -e AUTO_START_APP="${{ vars.AUTO_START_APP || 'true' }}" \
-            -e APP_START_COMMAND="${{ vars.APP_START_COMMAND || '' }}" \
+            -e MAX_ITERATIONS="${{ github.event.inputs.max-iterations || vars.MAX_ITERATIONS || '3' }}" \
+            -e TEST_TYPES="${{ github.event.inputs.test-types || vars.TEST_TYPES || 'unit,e2e,api' }}" \
+            -e APP_URL="${{ github.event.inputs.app-url || vars.APP_URL || '' }}" \
+            -e AUTO_START_APP="${{ github.event.inputs.auto-start-app || vars.AUTO_START_APP || 'true' }}" \
+            -e APP_START_COMMAND="${{ github.event.inputs.app-start-command || vars.APP_START_COMMAND || '' }}" \
             -e APP_SECRETS="${{ secrets.APP_SECRETS || '' }}" \
-            -e LOG_LEVEL="debug" \
+            -e LOG_LEVEL="${{ vars.LOG_LEVEL || 'info' }}" \
+            -e NODE_ENV="production" \
             "${FULL_IMAGE}")
           
-          echo "Container ID: ${CONTAINER_ID}"
-          
-          # Wait for container to complete and stream logs
-          docker logs -f "${CONTAINER_ID}" || true
-          
-          # Get exit code
-          EXIT_CODE=$(docker inspect "${CONTAINER_ID}" --format='{{.State.ExitCode}}')
-          
+          echo "🐳 Container started: ${CONTAINER_ID:0:12}"
           echo ""
-          echo "Container exited with code: ${EXIT_CODE}"
           
-          # Cleanup
-          docker rm "${CONTAINER_ID}" || true
+          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          # STREAM CONTAINER LOGS IN REAL-TIME
+          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          # docker logs -f follows the container output until it exits
+          # This is how we see ALL agent output including:
+          #   - Code analysis results
+          #   - Test generation details
+          #   - Unit test execution results
+          #   - E2E/API test results
+          #   - Fix iterations
+          #   - Final summary
+          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 AGENT EXECUTION LOG:"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          docker logs -f ignis-agent 2>&1
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
           
-          # Exit with same code
-          exit ${EXIT_CODE}
+          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          # GET ACTUAL EXIT CODE from the container
+          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          EXIT_CODE=$(docker inspect ignis-agent --format='{{.State.ExitCode}}' 2>/dev/null || echo "1")
+          
+          echo "════════════════════════════════════════════════════════════════════════"
+          echo "🏁 Agent Exit Code: ${EXIT_CODE}"
+          echo "════════════════════════════════════════════════════════════════════════"
+          echo ""
+          
+          # Cleanup container
+          docker rm ignis-agent 2>/dev/null || true
+          
+          # Exit with the agent's actual exit code
+          if [ "${EXIT_CODE}" = "0" ]; then
+            echo "✅ IGNIS Automation Test Agent completed SUCCESSFULLY"
+            exit 0
+          else
+            echo "❌ IGNIS Automation Test Agent FAILED (exit code: ${EXIT_CODE})"
+            exit ${EXIT_CODE}
+          fi
 
-      - name: Check agent execution result
-        if: steps.run-agent.outcome == 'failure'
+      # ════════════════════════════════════════════════════════════════════════
+      # DISPLAY TEST RESULTS (always runs, even on failure)
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: Display Test Results & Analysis Summary
+        if: always()
         run: |
-          echo "❌ IGNIS Automation Agent failed"
-          echo "Please check the logs above for error details"
-          exit 1
+          echo ""
+          echo "════════════════════════════════════════════════════════════════════════"
+          echo "📊 TEST RESULTS & ARTIFACTS SUMMARY"
+          echo "════════════════════════════════════════════════════════════════════════"
+          echo ""
+          
+          # Check for logs directory (written to workspace volume by container)
+          if [ -d "${{ github.workspace }}/logs" ]; then
+            echo "✅ Logs directory found:"
+            ls -la "${{ github.workspace }}/logs/" 2>/dev/null
+            echo ""
+            
+            # Display run summary
+            SUMMARY_FILE=$(ls -t ${{ github.workspace }}/logs/run-summary-*.log 2>/dev/null | head -1)
+            if [ -n "$SUMMARY_FILE" ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "📄 RUN SUMMARY:"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              cat "$SUMMARY_FILE"
+              echo ""
+            fi
+            
+            # Display combined.log (last 200 lines for full execution detail)
+            if [ -f "${{ github.workspace }}/logs/combined.log" ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "📄 FULL EXECUTION LOG (last 200 lines):"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              tail -200 "${{ github.workspace }}/logs/combined.log"
+              echo ""
+            fi
+            
+            # Display unit test results
+            UNIT_RESULT=$(ls -t ${{ github.workspace }}/logs/unit-test-results-*.log 2>/dev/null | head -1)
+            if [ -n "$UNIT_RESULT" ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🧪 UNIT TEST RESULTS:"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              cat "$UNIT_RESULT"
+              echo ""
+            fi
+            
+            # Display E2E/API test results
+            TEST_RESULT=$(ls -t ${{ github.workspace }}/logs/test-results-*.log 2>/dev/null | head -1)
+            if [ -n "$TEST_RESULT" ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🎭 E2E/API TEST RESULTS:"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              cat "$TEST_RESULT"
+              echo ""
+            fi
+            
+            # Display errors if any
+            if [ -f "${{ github.workspace }}/logs/error.log" ] && [ -s "${{ github.workspace }}/logs/error.log" ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "❌ ERROR LOG:"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              cat "${{ github.workspace }}/logs/error.log"
+              echo ""
+            fi
+          else
+            echo "⚠️ No logs directory found at workspace root."
+            echo "   This means the container exited before creating logs."
+            echo "   Check the 'AGENT EXECUTION LOG' step above for container output."
+            echo ""
+          fi
+          
+          # List generated tests
+          if [ -d "${{ github.workspace }}/generated-tests" ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "✅ GENERATED TEST FILES:"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            find "${{ github.workspace }}/generated-tests" -type f \( -name "*.spec.js" -o -name "*.test.js" -o -name "*.spec.ts" -o -name "*.test.ts" \) | while read f; do
+              echo "   📝 $(basename $f)"
+            done
+            echo ""
+            echo "   Total files:"
+            find "${{ github.workspace }}/generated-tests" -type f | wc -l
+            echo ""
+          fi
+          
+          # Check for test-results summary
+          if [ -f "${{ github.workspace }}/test-results/ignis-summary.json" ]; then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📊 IGNIS SUMMARY JSON:"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            cat "${{ github.workspace }}/test-results/ignis-summary.json" | python3 -m json.tool 2>/dev/null || cat "${{ github.workspace }}/test-results/ignis-summary.json"
+            echo ""
+          fi
 
-      - name: Upload test results
+      # ════════════════════════════════════════════════════════════════════════
+      # UPLOAD ALL ARTIFACTS
+      # ════════════════════════════════════════════════════════════════════════
+
+      - name: Upload All Test Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ignis-test-results-${{ github.run_number }}
+          name: ignis-automation-results-${{ github.run_number }}
           path: |
+            logs/
             generated-tests/
             test-results/
-            playwright-report/
             reports/
-            logs/
+            playwright-report/
+          if-no-files-found: warn
           retention-days: 30
 
-# ============================================================================
-# KEY CHANGES SUMMARY:
-# ============================================================================
-# ❌ REMOVED: -w /workspace (working directory override)
-# ✅ FIXED:   REPO_PATH="/workspace" (was host path, now container path)
-# ✅ ADDED:   GITHUB_WORKSPACE="/workspace"
-# ✅ ADDED:   LOG_LEVEL="debug" (for better error visibility)
-# ✅ ADDED:   Better error handling and log capture
-# ============================================================================
+      # ════════════════════════════════════════════════════════════════════════
+      # FAIL JOB IF AGENT FAILED
+      # ════════════════════════════════════════════════════════════════════════
+      
+      - name: Verify Agent Success
+        if: steps.run-agent.outcome == 'failure'
+        run: |
+          echo "❌ ════════════════════════════════════════════════════════════════════════"
+          echo "❌ IGNIS AUTOMATION TEST AGENT - EXECUTION FAILED"
+          echo "❌ ════════════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "The automation test agent completed with errors."
+          echo ""
+          echo "Exit Code 1 typically means:"
+          echo "   • Partial Success: Tests were generated but some failed"
+          echo "   • PR Creation Failed: Branch pushed but PR couldn't be created"
+          echo "   • Test Execution Issues: Tests generated but couldn't run"
+          echo ""
+          echo "✅ GOOD NEWS: With the updated permissions, PR creation should now work!"
+          echo ""
+          echo "📋 What to Check:"
+          echo ""
+          echo "   1. 🔀 PULL REQUEST:"
+          echo "      • Check if a PR was created in the 'Pull Request Information' step"
+          echo "      • Look for branch 'ignis/fix-*' in your repository"
+          echo "      • Visit: https://github.com/${{ github.repository }}/pulls"
+          echo ""
+          echo "   2. 🧪 TEST RESULTS:"
+          echo "      • Review 'Display Test Results' step for test execution details"
+          echo "      • Check if tests were generated (should see 'Generated X test files')"
+          echo "      • Download artifacts to see full test output"
+          echo ""
+          echo "   3. 📊 LOGS & ARTIFACTS:"
+          echo "      • Download the 'ignis-automation-results' artifact"
+          echo "      • Review logs/combined.log for full execution trace"
+          echo "      • Check logs/error.log if it exists"
+          echo ""
+          echo "   4. 🔑 COMMON FIXES:"
+          echo "      • AI API Key Issues → Verify AI_API_KEY is valid (not expired)"
+          echo "      • App Won't Start → Check APP_START_COMMAND or set APP_URL"
+          echo "      • Tests Don't Run → May need Playwright config adjustments"
+          echo "      • PR Not Created → Now fixed with permissions! Re-run workflow"
+          echo ""
+          echo "💡 NEXT STEPS:"
+          echo ""
+          echo "   If you see 'Failed to create PR: GitHub Actions is not permitted':"
+          echo "   ✅ This is now FIXED! The workflow has 'pull-requests: write' permission."
+          echo "   ✅ Re-run this workflow and PR creation should succeed."
+          echo ""
+          echo "   If tests were generated but didn't execute:"
+          echo "   • This is common on first run (0 tests executed)"
+          echo "   • Agent creates tests, commits them, and pushes branch"
+          echo "   • You can run tests manually or let agent iterate"
+          echo ""
+          echo "════════════════════════════════════════════════════════════════════════"
+          echo ""
+          exit 1
+      
+      # ════════════════════════════════════════════════════════════════════════
+      # PULL REQUEST SUMMARY
+      # ════════════════════════════════════════════════════════════════════════
+      
+      - name: Display Pull Request Information
+        if: always()
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════════════════════"
+          echo "🔀 PULL REQUEST INFORMATION"
+          echo "════════════════════════════════════════════════════════════════════════"
+          echo ""
+          
+          # Check if PR info was written by the agent
+          if [ -f "${{ github.workspace }}/logs/pr-info.txt" ]; then
+            cat "${{ github.workspace }}/logs/pr-info.txt"
+          else
+            # Check recent git branches
+            echo "🌿 Branches created by IGNIS agent:"
+            cd "${{ github.workspace }}"
+            git branch -a | grep "ignis/fix-" | tail -5 || echo "   No IGNIS branches found locally"
+            echo ""
+            
+            # Check if there are unpushed commits
+            CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+            if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "HEAD" ]; then
+              echo "Current branch: $CURRENT_BRANCH"
+              
+              # Check for remote branch
+              if git ls-remote --heads origin "$CURRENT_BRANCH" 2>/dev/null | grep -q "$CURRENT_BRANCH"; then
+                echo "✅ Branch pushed to remote: origin/$CURRENT_BRANCH"
+                echo ""
+                echo "🔗 Check for PR at:"
+                echo "   https://github.com/${{ github.repository }}/pulls?q=is%3Apr+head%3A$CURRENT_BRANCH"
+              else
+                echo "⚠️ Branch exists locally but not pushed to remote"
+              fi
+            fi
+          fi
+          
+          # Check run summary for PR URL
+          SUMMARY_FILE=$(ls -t ${{ github.workspace }}/logs/run-summary-*.log 2>/dev/null | head -1)
+          if [ -n "$SUMMARY_FILE" ]; then
+            PR_URL=$(grep -oP 'prUrl["\s:]+\K[^",\s]+' "$SUMMARY_FILE" 2>/dev/null || echo "")
+            if [ -n "$PR_URL" ] && [ "$PR_URL" != "null" ]; then
+              echo ""
+              echo "✅ Pull Request Created:"
+              echo "   $PR_URL"
+              echo ""
+              echo "::notice title=Pull Request Created::$PR_URL"
+            fi
+          fi
+          
+          echo ""
+          echo "════════════════════════════════════════════════════════════════════════"
+      
+      # ════════════════════════════════════════════════════════════════════════
+      # WORKFLOW SUMMARY
+      # ════════════════════════════════════════════════════════════════════════
+      
+      - name: Generate Workflow Summary
+        if: always()
+        run: |
+          echo "## 🤖 IGNIS Automation Test Agent - Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Agent status
+          if [ "${{ steps.run-agent.outcome }}" == "success" ]; then
+            echo "### ✅ Status: Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Status: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Configuration
+          echo "### ⚙️ Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **AI Provider:** ${{ github.event.inputs.ai-provider || vars.AI_PROVIDER || 'openai' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Test Types:** ${{ github.event.inputs.test-types || vars.TEST_TYPES || 'unit,e2e,api' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Max Iterations:** ${{ github.event.inputs.max-iterations || vars.MAX_ITERATIONS || '3' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.event.inputs.branch || github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Test results (if available)
+          if [ -f "${{ github.workspace }}/test-results/ignis-summary.json" ]; then
+            echo "### 📊 Test Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat "${{ github.workspace }}/test-results/ignis-summary.json" | head -50 >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Generated files
+          if [ -d "${{ github.workspace }}/generated-tests" ]; then
+            TEST_COUNT=$(find "${{ github.workspace }}/generated-tests" -type f \( -name "*.spec.js" -o -name "*.test.js" -o -name "*.spec.ts" -o -name "*.test.ts" \) | wc -l)
+            echo "### ✅ Generated $TEST_COUNT test files" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # PR information
+          SUMMARY_FILE=$(ls -t ${{ github.workspace }}/logs/run-summary-*.log 2>/dev/null | head -1)
+          if [ -n "$SUMMARY_FILE" ]; then
+            PR_URL=$(grep -oP 'prUrl["\s:]+\K[^",\s]+' "$SUMMARY_FILE" 2>/dev/null || echo "")
+            if [ -n "$PR_URL" ] && [ "$PR_URL" != "null" ]; then
+              echo "### 🔀 Pull Request" >> $GITHUB_STEP_SUMMARY
+              echo "✅ [View Pull Request]($PR_URL)" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          # Artifacts
+          echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "Download test results, logs, and generated tests from the [Artifacts section](#artifacts) below." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Troubleshooting (if failed)
+          if [ "${{ steps.run-agent.outcome }}" != "success" ]; then
+            echo "### 🔍 Troubleshooting" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "1. Review the **Display Test Results** step for detailed output" >> $GITHUB_STEP_SUMMARY
+            echo "2. Download artifacts to review logs locally" >> $GITHUB_STEP_SUMMARY
+            echo "3. Check that \`AI_API_KEY\` is valid in repository secrets" >> $GITHUB_STEP_SUMMARY
+            echo "4. Verify application can start with provided configuration" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi

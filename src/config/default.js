@@ -24,7 +24,7 @@ const defaults = {
   },
   github: {
     authMethod: process.env.GITHUB_AUTH_METHOD || 'pat',
-    token: process.env.GITHUB_TOKEN,
+    token: process.env.GITHUB_PAT || process.env.GITHUB_TOKEN,
     appId: process.env.GITHUB_APP_ID,
     privateKey: process.env.GITHUB_PRIVATE_KEY,
     installationId: process.env.GITHUB_INSTALLATION_ID

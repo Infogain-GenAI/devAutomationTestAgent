@@ -12,25 +12,45 @@ class UnitTestRunner {
 
   /**
    * Check package.json for explicitly declared test framework (highest priority)
+   * Checks root, then common subdirectories (src/, app/, etc.)
    */
   _getFrameworkFromPackageJson(workDir) {
-    const packageJsonPath = path.join(workDir, 'package.json');
-    if (!fs.existsSync(packageJsonPath)) return null;
+    const candidates = [
+      path.join(workDir, 'package.json'),
+      path.join(workDir, 'src', 'package.json'),
+      path.join(workDir, 'app', 'package.json')
+    ];
 
-    try {
-      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-      const deps = {
-        ...packageJson.dependencies,
-        ...packageJson.devDependencies
-      };
+    for (const packageJsonPath of candidates) {
+      if (!fs.existsSync(packageJsonPath)) continue;
+      try {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+        const deps = {
+          ...packageJson.dependencies,
+          ...packageJson.devDependencies
+        };
 
-      if (deps['jest'] || deps['@jest/globals']) return 'jest';
-      if (deps['mocha']) return 'mocha';
-      if (deps['vitest']) return 'vitest';
-    } catch (err) {
-      logger.warn(`Failed to parse package.json: ${err.message}`);
+        if (deps['jest'] || deps['@jest/globals']) return 'jest';
+        if (deps['mocha']) return 'mocha';
+        if (deps['vitest']) return 'vitest';
+      } catch (err) {
+        logger.warn(`Failed to parse ${packageJsonPath}: ${err.message}`);
+      }
     }
     return null;
+  }
+
+  /**
+   * Find the project root that contains package.json (might be in a subdirectory)
+   */
+  _findProjectRoot(workDir) {
+    if (fs.existsSync(path.join(workDir, 'package.json'))) return workDir;
+    const subDirs = ['src', 'app', 'packages'];
+    for (const sub of subDirs) {
+      const candidate = path.join(workDir, sub);
+      if (fs.existsSync(path.join(candidate, 'package.json'))) return candidate;
+    }
+    return workDir;
   }
 
   /**
@@ -70,7 +90,8 @@ class UnitTestRunner {
    * Install test framework if not present
    */
   async installTestFramework(workDir, framework) {
-    const packageJsonPath = path.join(workDir, 'package.json');
+    const projectRoot = this._findProjectRoot(workDir);
+    const packageJsonPath = path.join(projectRoot, 'package.json');
     
     // If no package.json exists, create a minimal one for the test runner
     if (!fs.existsSync(packageJsonPath)) {
@@ -89,7 +110,7 @@ class UnitTestRunner {
     // Check if framework is already globally available
     try {
       const { execSync } = require('child_process');
-      execSync(`npx ${framework} --version`, { cwd: workDir, stdio: 'pipe', timeout: 10000 });
+      execSync(`npx ${framework} --version`, { cwd: projectRoot, stdio: 'pipe', timeout: 10000 });
       logger.info(`${framework} is already available`);
       return;
     } catch {
@@ -104,7 +125,7 @@ class UnitTestRunner {
 
     return new Promise((resolve, reject) => {
       const proc = spawn('npm', ['install', '--save-dev', ...deps], {
-        cwd: workDir,
+        cwd: projectRoot,
         shell: true,
         stdio: 'pipe',
         timeout: 120000 // 2 min timeout for install
@@ -190,18 +211,24 @@ class UnitTestRunner {
     logger.info(`Running ${framework} unit tests (${allTestFiles.length} test file(s) from ${dirs.length} dir(s))...`);
 
     // Look for jest.config.js in project root or generated-tests directory
+    const projectRoot = this._findProjectRoot(workDir);
     const generatedTestsDir = path.join(workDir, 'generated-tests');
     const generatedJestConfig = path.join(generatedTestsDir, 'jest.config.js');
-    const projectJestConfig = path.join(workDir, 'jest.config.js');
+    const projectJestConfig = path.join(projectRoot, 'jest.config.js');
+    const projectJestConfigTs = path.join(projectRoot, 'jest.config.ts');
     
     // Prefer project's own jest config, fall back to generated one
     let jestConfigPath = null;
-    let jestCwd = workDir;
+    let jestCwd = projectRoot; // Use project root (where package.json is) as default CWD
     
     if (fs.existsSync(projectJestConfig)) {
       jestConfigPath = projectJestConfig;
-      jestCwd = workDir;
-      logger.info('Using project jest.config.js');
+      jestCwd = projectRoot;
+      logger.info(`Using project jest.config.js (in ${path.relative(workDir, projectRoot) || '.'})`);
+    } else if (fs.existsSync(projectJestConfigTs)) {
+      jestConfigPath = projectJestConfigTs;
+      jestCwd = projectRoot;
+      logger.info(`Using project jest.config.ts (in ${path.relative(workDir, projectRoot) || '.'})`);
     } else if (fs.existsSync(generatedJestConfig)) {
       jestConfigPath = generatedJestConfig;
       jestCwd = generatedTestsDir;
@@ -218,7 +245,8 @@ class UnitTestRunner {
           args.push('--config', relConfigPath || 'jest.config.js');
         } else {
           // No config — provide testMatch and patterns inline
-          const relDirs = dirs.map(d => path.relative(workDir, d).replace(/\\/g, '/'));
+          // Paths must be relative to jestCwd (where jest runs from)
+          const relDirs = dirs.map(d => path.relative(jestCwd, d).replace(/\\/g, '/'));
           let dirGlob;
           if (relDirs.length === 1) {
             dirGlob = relDirs[0];
