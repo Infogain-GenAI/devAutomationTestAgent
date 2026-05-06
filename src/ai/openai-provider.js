@@ -73,11 +73,15 @@ IMPORTANT: Generate tests ONLY for the files listed above. Do NOT create tests f
 
 `;
       } else {
-        testInstructions += `Generate ${testType} tests for backend code using Jest/Mocha. Include:
+        testInstructions += `Generate ${testType} tests for backend code using Jest. Include:
 - Unit tests for individual functions/methods
 - Mock external dependencies
 - Test edge cases and error handling
-- Use describe/it/expect syntax
+- Use describe/it/expect syntax (Jest)
+- MUST use CommonJS require() syntax (NOT ES module import/export)
+- Use const request = require('supertest') for API/HTTP testing
+- Use const app = require('relative/path/to/app') to import the Express app
+- File names MUST end with .test.js (NOT .spec.js — those are for Playwright)
 `;
       }
       testInstructions += `Return JSON with:

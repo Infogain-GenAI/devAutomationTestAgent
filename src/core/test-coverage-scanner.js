@@ -300,6 +300,10 @@ class TestCoverageScanner {
     if (content.includes('jest') || content.includes('@jest/globals')) return 'jest';
     if (content.includes('mocha') || content.includes('chai')) return 'mocha';
     if (content.includes('vitest')) return 'vitest';
+    // Detect Jest from its unique matcher style (toBe, toEqual, toHaveProperty, etc.)
+    if (/expect\(.*\)\.(toBe|toEqual|toHaveProperty|toBeTruthy|toBeFalsy|toContain|toThrow|toHaveBeenCalled)\(/.test(content)) return 'jest';
+    // describe + it + expect without any framework import is likely Jest (globals)
+    if (content.includes('describe(') && content.includes('expect(') && content.includes('it(')) return 'jest';
     return 'unknown';
   }
 

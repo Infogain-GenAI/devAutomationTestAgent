@@ -144,7 +144,7 @@ class AgentOrchestrator {
       // ── Step 6: Analyze codebase ────────────────────────────
       logger.info('Starting code analysis...');
       updateStatus('analyzing');
-      const codeAnalysis = await this.codeAnalyzer.analyze(workDir);
+      const codeAnalysis = await this.codeAnalyzer.analyze(workDir, techStack);
       logger.info('✅ Code analysis complete');
 
       // ── Step 6a: Backend Validation (NEW) ───────────────────
@@ -267,8 +267,49 @@ class AgentOrchestrator {
         updateStatus('testing-units');
         
         try {
-          const testDir = path.join(workDir, 'generated-tests/tests');
-          unitTestResults = await this.unitTestRunner.runTests(workDir, testDir);
+          // Collect ALL test directories (generated + existing project tests)
+          const testDirs = [];
+          
+          // 1. Check generated tests
+          const generatedTestDir = path.join(workDir, 'generated-tests/tests');
+          if (fs.existsSync(generatedTestDir)) {
+            testDirs.push(generatedTestDir);
+          }
+          
+          // 2. Add existing project test directories
+          const projectTestDirs = ['__tests__', 'tests', 'test', 'spec'];
+          for (const dir of projectTestDirs) {
+            const candidate = path.join(workDir, dir);
+            if (fs.existsSync(candidate) && candidate !== generatedTestDir) {
+              testDirs.push(candidate);
+            }
+          }
+          
+          // 3. Analyze existing test tech stack for proper framework selection
+          const existingTestFrameworks = new Set();
+          if (existingTests) {
+            Object.values(existingTests).forEach(tests => {
+              tests.forEach(test => {
+                if (test.framework && test.framework !== 'unknown' && test.framework !== 'playwright' && test.framework !== 'cypress') {
+                  existingTestFrameworks.add(test.framework);
+                }
+              });
+            });
+          }
+          
+          if (existingTestFrameworks.size > 0) {
+            logger.info(`Existing test frameworks detected: ${[...existingTestFrameworks].join(', ')}`);
+          }
+          
+          if (testDirs.length === 0) {
+            logger.info('No test directories found — skipping unit test execution');
+            unitTestResults = { framework: 'jest', passed: 0, failed: 0, total: 0, skipped: 0, duration: 0, exitCode: 0, failures: [] };
+          } else {
+            logger.info(`Running unit tests from ${testDirs.length} directory(ies): ${testDirs.map(d => path.relative(workDir, d)).join(', ')}`);
+            unitTestResults = await this.unitTestRunner.runTests(workDir, testDirs, {
+              detectedFrameworks: [...existingTestFrameworks]
+            });
+          }
           
           // Write results to log
           this.unitTestRunner.writeResultsToLog(unitTestResults, workDir);

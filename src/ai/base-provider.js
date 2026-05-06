@@ -62,6 +62,10 @@ class BaseAIProvider {
 - "appType": string describing the application type (e.g., "full-stack web app", "API service")
 - "testingPriorities": array of strings describing what should be tested first
 - "userFlows": array of critical user flows to test
+- "technologyNotes": object with technology-specific best practice recommendations based on the detected tech stack
+
+IMPORTANT: If a "techStack" field is present in the context, use it to guide your analysis. Apply best practices specific to the detected frameworks (e.g., Express middleware testing patterns, React component testing strategies, database transaction handling). Your recommendations should be tailored to the exact technology stack detected.
+
 Return ONLY valid JSON, no markdown formatting.`,
 
       'deep-dive': `You are an expert software testing architect. Analyze the provided source code and return a JSON object with:
@@ -71,18 +75,36 @@ Return ONLY valid JSON, no markdown formatting.`,
 - "authFlow": description of authentication flow if present
 - "formValidation": array of forms and their validation rules
 - "apiContracts": array of API endpoint contracts (method, path, expected request/response)
+- "bestPractices": object with technology-specific testing guidelines
+
+IMPORTANT: If a "techStack" field is present in the context, use it to guide your analysis:
+- For Express/Node.js backends: focus on middleware chains, error handling, route validation, async error propagation
+- For React frontends: focus on component lifecycle, state management, hooks testing, rendering edge cases
+- For MongoDB: focus on schema validation, indexing, transaction handling
+- For PostgreSQL: focus on migrations, connection pooling, query optimization
+- Apply framework-specific testing patterns and best practices for the detected stack.
+
 Return ONLY valid JSON, no markdown formatting.`,
 
       'generate-tests': `You are an expert Playwright test engineer. Generate comprehensive, production-ready Playwright test files.
-Follow these rules:
-- Use @playwright/test import
+
+CRITICAL SYNTAX RULES (Playwright-specific):
+- MUST use: const { test, expect } = require('@playwright/test');
+- MUST use test.describe() for grouping (NOT bare describe())
+- MUST use test() for test cases (NOT it())
+- NEVER use bare describe() or it() — those are Jest/Mocha, NOT Playwright
+- For API tests, use: test('name', async ({ request }) => { ... })
+- For E2E tests, use: test('name', async ({ page }) => { ... })
+- Use CommonJS require() syntax, NOT ES module import/export
+
+Additional rules:
 - Use descriptive test names
 - Use data-testid selectors where possible, fall back to role-based selectors
 - Add proper waits (waitForSelector, waitForResponse, etc.)
-- Include setup/teardown in beforeEach/afterEach
+- Include setup/teardown in test.beforeEach/test.afterEach
 - Handle authentication flows properly
 - Add meaningful assertions
-- Group related tests in describe blocks
+- Group related tests in test.describe blocks
 Return ONLY valid JavaScript/TypeScript code, no markdown.`,
 
       'analyze-failures': `You are an expert debugging engineer. Analyze the test failures and return a JSON object with:

@@ -68,7 +68,7 @@ class CodeAnalyzer {
    * Layer 2: Surface analysis — lightweight AI call.
    * Extracts routes, API endpoints, component list, models.
    */
-  async surfaceAnalysis(workDir, structureResult) {
+  async surfaceAnalysis(workDir, structureResult, techStack = null) {
     logger.info('Running Layer 2: Surface analysis...');
 
     const routes = this._extractRoutes(workDir);
@@ -86,6 +86,17 @@ class CodeAnalyzer {
       components,
       models
     };
+
+    // Include tech stack info for better analysis
+    if (techStack) {
+      surfaceContext.techStack = {
+        frontend: techStack.frontend ? `${techStack.frontend.framework} (${techStack.frontend.dir || '.'})` : null,
+        backend: techStack.backend ? `${techStack.backend.framework} (${techStack.backend.dir || '.'})` : null,
+        language: techStack.language,
+        database: techStack.database?.type || null,
+        packageManager: techStack.packageManager
+      };
+    }
 
     let aiSurfaceResult = null;
     try {
@@ -110,7 +121,7 @@ class CodeAnalyzer {
   /**
    * Layer 3: Deep-dive — targeted AI analysis of critical files.
    */
-  async deepDive(workDir, surfaceResult) {
+  async deepDive(workDir, surfaceResult, techStack = null) {
     logger.info('Running Layer 3: Deep-dive analysis...');
 
     // Determine which files to analyze in depth
@@ -135,16 +146,29 @@ class CodeAnalyzer {
     }
 
     // Send to AI for comprehensive analysis
+    const deepDiveContext = {
+      fileContents,
+      routes: surfaceResult.routes,
+      apiEndpoints: surfaceResult.apiEndpoints,
+      components: surfaceResult.components,
+      models: surfaceResult.models,
+      surfaceRecommendations: surfaceResult.aiRecommendations
+    };
+
+    // Include tech stack for technology-specific best practice analysis
+    if (techStack) {
+      deepDiveContext.techStack = {
+        frontend: techStack.frontend ? `${techStack.frontend.framework} (${techStack.frontend.dir || '.'})` : null,
+        backend: techStack.backend ? `${techStack.backend.framework} (${techStack.backend.dir || '.'})` : null,
+        language: techStack.language,
+        database: techStack.database?.type || null,
+        packageManager: techStack.packageManager
+      };
+    }
+
     const analysisResult = await this.aiProvider.analyzeCode({
       phase: 'deep-dive',
-      context: {
-        fileContents,
-        routes: surfaceResult.routes,
-        apiEndpoints: surfaceResult.apiEndpoints,
-        components: surfaceResult.components,
-        models: surfaceResult.models,
-        surfaceRecommendations: surfaceResult.aiRecommendations
-      }
+      context: deepDiveContext
     });
 
     logger.info('Deep-dive analysis complete');
@@ -157,16 +181,19 @@ class CodeAnalyzer {
 
   /**
    * Full analysis pipeline: Layer 1 → Layer 2 → Layer 3.
+   * @param {string} workDir - Repository directory
+   * @param {object} techStack - Detected technology stack (optional)
    */
-  async analyze(workDir) {
+  async analyze(workDir, techStack = null) {
     const structure = await this.structureScan(workDir);
-    const surface = await this.surfaceAnalysis(workDir, structure);
-    const deep = await this.deepDive(workDir, surface);
+    const surface = await this.surfaceAnalysis(workDir, structure, techStack);
+    const deep = await this.deepDive(workDir, surface, techStack);
 
     return {
       structure,
       surface,
       analysis: deep,
+      techStack,
       testingStrategy: deep.deepAnalysis?.testingStrategy || null
     };
   }

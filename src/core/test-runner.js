@@ -53,8 +53,7 @@ class TestRunner {
 
     const args = [
       'playwright', 'test',
-      '--config', configFile,
-      '--reporter', 'json'
+      '--config', `"${configFile}"`
     ];
 
     if (config.grep) {
@@ -122,22 +121,38 @@ class TestRunner {
           logger.warn(`Failed to write test log file: ${err.message}`);
         }
 
-        // Try to parse JSON results
+        // Try to parse JSON results from reporter output file
         let jsonResults = null;
         if (fs.existsSync(resultsFile)) {
           try {
             jsonResults = JSON.parse(fs.readFileSync(resultsFile, 'utf-8'));
+            logger.info('Parsed test results from reporter output file');
           } catch {
             logger.warn('Failed to parse JSON results file');
           }
         }
 
-        // If no JSON file, try parsing stdout
+        // If no results file, try parsing stdout (fallback)
         if (!jsonResults) {
           try {
-            jsonResults = JSON.parse(stdout);
+            // Playwright JSON reporter output might be mixed with other reporter output
+            // Try to extract JSON from stdout
+            const jsonMatch = stdout.match(/^\{[\s\S]*\}$/m);
+            if (jsonMatch) {
+              jsonResults = JSON.parse(jsonMatch[0]);
+            } else {
+              jsonResults = JSON.parse(stdout);
+            }
           } catch {
-            logger.warn('Failed to parse stdout as JSON');
+            if (stdout.trim()) {
+              logger.warn('Failed to parse stdout as JSON');
+            } else {
+              logger.warn('Playwright produced no stdout output — likely a configuration error');
+            }
+            // Log stderr for debugging
+            if (stderr.trim()) {
+              logger.warn(`Playwright stderr: ${stderr.slice(0, 500)}`);
+            }
           }
         }
 

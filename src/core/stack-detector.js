@@ -7,6 +7,7 @@ const logger = require('../utils/logger');
 class StackDetector {
   /**
    * Auto-detect the technology stack from the repository.
+   * Searches root and one-level-deep subdirectories.
    */
   static detect(workDir, overrides = {}) {
     logger.info('Detecting technology stack...');
@@ -18,6 +19,7 @@ class StackDetector {
       language: null,
       monorepo: false,
       packageManager: null,
+      projectRoot: workDir,
       ...overrides
     };
 
@@ -26,20 +28,38 @@ class StackDetector {
       result.packageManager = StackDetector._detectPackageManager(workDir);
     }
 
-    // Detect from package.json
-    const pkgPath = path.join(workDir, 'package.json');
-    if (fs.existsSync(pkgPath)) {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    // Find all package.json files (root + one level deep)
+    const packageJsonDirs = StackDetector._findPackageJsonDirs(workDir);
 
-      if (!result.frontend) {
-        result.frontend = StackDetector._detectFrontend(allDeps, pkg, workDir);
-      }
-      if (!result.backend) {
-        result.backend = StackDetector._detectBackend(allDeps, pkg, workDir);
-      }
-      if (!result.language) {
-        result.language = StackDetector._detectLanguage(allDeps, workDir);
+    // Analyze each package.json for tech stack
+    for (const dir of packageJsonDirs) {
+      const pkgPath = path.join(dir, 'package.json');
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+        const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+        if (!result.frontend) {
+          result.frontend = StackDetector._detectFrontend(allDeps, pkg, dir);
+          if (result.frontend) {
+            result.frontend.dir = path.relative(workDir, dir) || '.';
+            logger.info(`Frontend detected: ${result.frontend.framework} (in ${result.frontend.dir})`);
+          }
+        }
+        if (!result.backend) {
+          result.backend = StackDetector._detectBackend(allDeps, pkg, dir);
+          if (result.backend) {
+            result.backend.dir = path.relative(workDir, dir) || '.';
+            logger.info(`Backend detected: ${result.backend.framework} (in ${result.backend.dir})`);
+          }
+        }
+        if (!result.language) {
+          result.language = StackDetector._detectLanguage(allDeps, dir);
+        }
+        if (!result.database) {
+          result.database = StackDetector._detectDatabaseFromDeps(allDeps);
+        }
+      } catch (err) {
+        logger.debug(`Failed to parse ${pkgPath}: ${err.message}`);
       }
     }
 
@@ -50,7 +70,7 @@ class StackDetector {
       if (!result.language) result.language = 'python';
     }
 
-    // Detect database
+    // Detect database from config files if not yet found
     if (!result.database) {
       result.database = StackDetector._detectDatabase(workDir);
     }
@@ -62,21 +82,69 @@ class StackDetector {
     Object.assign(result, overrides);
 
     logger.info(`Stack detected: ${JSON.stringify({
-      frontend: result.frontend?.framework,
-      backend: result.backend?.framework,
+      frontend: result.frontend ? `${result.frontend.framework} (${result.frontend.dir || '.'})` : null,
+      backend: result.backend ? `${result.backend.framework} (${result.backend.dir || '.'})` : null,
       language: result.language,
-      monorepo: result.monorepo
+      database: result.database?.type || null,
+      monorepo: result.monorepo,
+      packageManager: result.packageManager
     })}`);
 
     return result;
   }
 
+  /**
+   * Find all directories containing package.json (root + one level deep).
+   */
+  static _findPackageJsonDirs(workDir) {
+    const dirs = [];
+    
+    // Check root
+    if (fs.existsSync(path.join(workDir, 'package.json'))) {
+      dirs.push(workDir);
+    }
+
+    // Check one level deep
+    try {
+      const entries = fs.readdirSync(workDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (['node_modules', '.git', 'generated-tests', 'logs', 'test-results', 'reports', 'dist', 'build', '.next'].includes(entry.name)) continue;
+        
+        const subDir = path.join(workDir, entry.name);
+        if (fs.existsSync(path.join(subDir, 'package.json'))) {
+          dirs.push(subDir);
+        }
+      }
+    } catch (err) {
+      logger.debug(`Error scanning subdirectories: ${err.message}`);
+    }
+
+    return dirs;
+  }
+
   static _detectPackageManager(workDir) {
+    // Check root
     if (fs.existsSync(path.join(workDir, 'pnpm-lock.yaml'))) return 'pnpm';
     if (fs.existsSync(path.join(workDir, 'yarn.lock'))) return 'yarn';
     if (fs.existsSync(path.join(workDir, 'package-lock.json'))) return 'npm';
     if (fs.existsSync(path.join(workDir, 'package.json'))) return 'npm';
     if (fs.existsSync(path.join(workDir, 'requirements.txt'))) return 'pip';
+    
+    // Check one level deep
+    try {
+      const entries = fs.readdirSync(workDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (['node_modules', '.git', 'generated-tests'].includes(entry.name)) continue;
+        const subDir = path.join(workDir, entry.name);
+        if (fs.existsSync(path.join(subDir, 'pnpm-lock.yaml'))) return 'pnpm';
+        if (fs.existsSync(path.join(subDir, 'yarn.lock'))) return 'yarn';
+        if (fs.existsSync(path.join(subDir, 'package-lock.json'))) return 'npm';
+        if (fs.existsSync(path.join(subDir, 'package.json'))) return 'npm';
+      }
+    } catch {}
+    
     return null;
   }
 
@@ -160,18 +228,37 @@ class StackDetector {
     return 'javascript';
   }
 
-  static _detectDatabase(workDir) {
-    const pkgPath = path.join(workDir, 'package.json');
-    if (!fs.existsSync(pkgPath)) return null;
-
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-
-    if (deps.pg || deps.sequelize || deps.knex || deps.prisma) return { type: 'postgresql' };
+  static _detectDatabaseFromDeps(deps) {
+    if (deps.pg || deps.sequelize || deps.knex || deps.prisma || deps['@prisma/client']) return { type: 'postgresql' };
     if (deps.mysql2 || deps.mysql) return { type: 'mysql' };
     if (deps.mongoose || deps.mongodb) return { type: 'mongodb' };
     if (deps.redis || deps.ioredis) return { type: 'redis' };
     if (deps['better-sqlite3'] || deps.sqlite3) return { type: 'sqlite' };
+    if (deps.typeorm) return { type: 'typeorm' };
+    return null;
+  }
+
+  static _detectDatabase(workDir) {
+    // Check all package.json files for DB deps
+    const dirs = StackDetector._findPackageJsonDirs(workDir);
+    for (const dir of dirs) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8'));
+        const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+        const db = StackDetector._detectDatabaseFromDeps(deps);
+        if (db) return db;
+      } catch {}
+    }
+
+    // Check for docker-compose with DB services
+    const composePath = path.join(workDir, 'docker-compose.yml');
+    if (fs.existsSync(composePath)) {
+      const content = fs.readFileSync(composePath, 'utf-8').toLowerCase();
+      if (content.includes('postgres')) return { type: 'postgresql' };
+      if (content.includes('mysql')) return { type: 'mysql' };
+      if (content.includes('mongo')) return { type: 'mongodb' };
+      if (content.includes('redis')) return { type: 'redis' };
+    }
 
     return null;
   }

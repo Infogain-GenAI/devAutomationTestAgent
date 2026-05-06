@@ -403,11 +403,13 @@ class TestGenerator {
         : 'http://localhost:3000';
 
     const testDirs = [];
-    if (testTypes.includes('e2e')) testDirs.push('./e2e/**/*.spec.js');
-    if (testTypes.includes('api')) testDirs.push('./api/**/*.spec.js');
-    if (testTypes.includes('visual')) testDirs.push('./visual/**/*.spec.js');
-    if (testTypes.includes('accessibility')) testDirs.push('./accessibility/**/*.spec.js');
-    if (testTypes.includes('performance')) testDirs.push('./performance/**/*.spec.js');
+    if (testTypes.includes('e2e')) testDirs.push('**/e2e/**/*.spec.js');
+    if (testTypes.includes('api')) testDirs.push('**/api/**/*.spec.js');
+    if (testTypes.includes('visual')) testDirs.push('**/visual/**/*.spec.js');
+    if (testTypes.includes('accessibility')) testDirs.push('**/accessibility/**/*.spec.js');
+    if (testTypes.includes('performance')) testDirs.push('**/performance/**/*.spec.js');
+    // Catch-all for any spec files
+    testDirs.push('**/*.spec.js');
 
     const config = `// @ts-check
 const { defineConfig, devices } = require('@playwright/test');
@@ -458,6 +460,10 @@ module.exports = {
   testMatch: [
     '**/tests/unit/**/*.test.js',
     '**/tests/integration/**/*.test.js'
+  ],
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    '.*\\\.spec\\\.js$'
   ],
   collectCoverage: true,
   coverageDirectory: '../coverage',

@@ -74,8 +74,8 @@ class UnitTestRunner {
     }
 
     const deps = framework === 'jest' 
-      ? ['jest', '@types/jest']
-      : ['mocha', 'chai', '@types/mocha', '@types/chai'];
+      ? ['jest', '@types/jest', 'supertest']
+      : ['mocha', 'chai', '@types/mocha', '@types/chai', 'supertest'];
     
     logger.info(`Installing ${framework} test framework: ${deps.join(', ')}...`);
 
@@ -111,27 +111,105 @@ class UnitTestRunner {
 
   /**
    * Run unit tests using Jest or Mocha
+   * @param {string} workDir - Project root directory
+   * @param {string|string[]} testDirs - Test directory or array of test directories
+   * @param {object} options - { detectedFrameworks: string[] }
    */
-  async runTests(workDir, testDir) {
-    const framework = this.detectTestFramework(workDir);
+  async runTests(workDir, testDirs, options = {}) {
+    // Normalize to array
+    const dirs = Array.isArray(testDirs) ? testDirs : [testDirs];
     
+    // Detect framework — prefer existing test framework if detected
+    let framework;
+    if (options.detectedFrameworks && options.detectedFrameworks.length > 0) {
+      // Use the framework already used in existing tests
+      framework = options.detectedFrameworks[0]; // e.g., 'jest', 'mocha'
+      logger.info(`Using detected test framework: ${framework}`);
+    } else {
+      framework = this.detectTestFramework(workDir);
+    }
+    
+    // Collect all unit test files from all directories
+    const allTestFiles = [];
+    for (const dir of dirs) {
+      const files = this._findUnitTestFiles(dir);
+      allTestFiles.push(...files);
+    }
+    
+    if (allTestFiles.length === 0) {
+      logger.info('No unit test files (.test.js) found in any directory — skipping unit test execution');
+      return {
+        framework,
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        total: 0,
+        duration: 0,
+        exitCode: 0,
+        failures: [],
+        coverage: null,
+        rawOutput: '',
+        errors: '',
+        skippedReason: 'No .test.js files found'
+      };
+    }
+
     // Ensure test framework is available
     await this.installTestFramework(workDir, framework);
 
-    logger.info(`Running ${framework} unit tests in ${testDir}...`);
+    logger.info(`Running ${framework} unit tests (${allTestFiles.length} test file(s) from ${dirs.length} dir(s))...`);
+
+    // Look for jest.config.js in project root or generated-tests directory
+    const generatedTestsDir = path.join(workDir, 'generated-tests');
+    const generatedJestConfig = path.join(generatedTestsDir, 'jest.config.js');
+    const projectJestConfig = path.join(workDir, 'jest.config.js');
+    
+    // Prefer project's own jest config, fall back to generated one
+    let jestConfigPath = null;
+    let jestCwd = workDir;
+    
+    if (fs.existsSync(projectJestConfig)) {
+      jestConfigPath = projectJestConfig;
+      jestCwd = workDir;
+      logger.info('Using project jest.config.js');
+    } else if (fs.existsSync(generatedJestConfig)) {
+      jestConfigPath = generatedJestConfig;
+      jestCwd = generatedTestsDir;
+      logger.info('Using generated jest.config.js');
+    }
 
     return new Promise((resolve, reject) => {
-      const args = framework === 'jest'
-        ? ['--', '--json', '--testPathPattern', testDir, '--coverage', '--coverageDirectory=./coverage']
-        : ['--reporter', 'json', testDir];
+      let args;
+      if (framework === 'jest') {
+        args = ['--json', '--forceExit'];
+        if (jestConfigPath) {
+          // Use relative config path from cwd
+          const relConfigPath = path.relative(jestCwd, jestConfigPath);
+          args.push('--config', relConfigPath || 'jest.config.js');
+        } else {
+          // No config — provide testMatch and patterns inline
+          const relDirs = dirs.map(d => path.relative(workDir, d).replace(/\\/g, '/'));
+          let dirGlob;
+          if (relDirs.length === 1) {
+            dirGlob = relDirs[0];
+          } else {
+            dirGlob = `{${relDirs.join(',')}}`;
+          }
+          args.push('--testMatch', `**/${dirGlob}/**/*.test.{js,ts}`);
+          args.push('--testPathIgnorePatterns', '/node_modules/', '.*\\.spec\\.js$');
+        }
+      } else {
+        // Mocha: pass all test files directly
+        const testFileGlobs = dirs.map(d => `"${path.join(d, '**/*.test.js')}"`);
+        args = ['--reporter', 'json', ...testFileGlobs];
+      }
 
-      const command = framework === 'jest' ? 'npx' : 'npx';
       const fullArgs = framework === 'jest' 
         ? ['jest', ...args]
         : ['mocha', ...args];
 
-      const proc = spawn(command, fullArgs, {
-        cwd: workDir,
+      const proc = spawn('npx', fullArgs, {
+        cwd: jestCwd,
         shell: true,
         stdio: 'pipe',
         timeout: 5 * 60 * 1000 // 5 minutes
@@ -340,6 +418,32 @@ class UnitTestRunner {
     fs.writeFileSync(jsonFile, JSON.stringify(results, null, 2), 'utf-8');
 
     return logFile;
+  }
+
+  /**
+   * Find unit test files (.test.js) in the test directory
+   */
+  _findUnitTestFiles(testDir) {
+    const files = [];
+    if (!fs.existsSync(testDir)) return files;
+
+    function walk(dir) {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.name === 'node_modules') continue;
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            walk(fullPath);
+          } else if (entry.name.endsWith('.test.js') || entry.name.endsWith('.test.ts')) {
+            files.push(fullPath);
+          }
+        }
+      } catch {}
+    }
+
+    walk(testDir);
+    return files;
   }
 }
 
