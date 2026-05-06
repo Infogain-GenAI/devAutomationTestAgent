@@ -276,16 +276,53 @@ class AgentOrchestrator {
             testDirs.push(generatedTestDir);
           }
           
-          // 2. Add existing project test directories
+          // 2. Add existing project test directories (root + subdirectories)
           const projectTestDirs = ['__tests__', 'tests', 'test', 'spec'];
-          for (const dir of projectTestDirs) {
-            const candidate = path.join(workDir, dir);
-            if (fs.existsSync(candidate) && candidate !== generatedTestDir) {
-              testDirs.push(candidate);
+          // Check root-level AND common subdirectory locations (e.g., src/)
+          const searchRoots = [workDir];
+          const subDirs = ['src', 'app', 'lib', 'packages'];
+          for (const sub of subDirs) {
+            const subPath = path.join(workDir, sub);
+            if (fs.existsSync(subPath)) {
+              searchRoots.push(subPath);
+            }
+          }
+          for (const root of searchRoots) {
+            for (const dir of projectTestDirs) {
+              const candidate = path.join(root, dir);
+              if (fs.existsSync(candidate) && candidate !== generatedTestDir && !testDirs.includes(candidate)) {
+                testDirs.push(candidate);
+              }
             }
           }
           
-          // 3. Analyze existing test tech stack for proper framework selection
+          // 3. Extract test directories from scanner results (covers non-standard locations)
+          if (existingTests) {
+            const unitAndIntegrationTests = [
+              ...(existingTests.unit || []),
+              ...(existingTests.integration || [])
+            ];
+            for (const test of unitAndIntegrationTests) {
+              if (test.file && test.framework !== 'playwright' && test.framework !== 'cypress') {
+                const testFileDir = path.dirname(path.join(workDir, test.file));
+                // Walk up to find the top-level test directory (e.g., src/__tests__ not src/__tests__/sub)
+                let testRoot = testFileDir;
+                while (testRoot !== workDir) {
+                  const parent = path.dirname(testRoot);
+                  const baseName = path.basename(testRoot);
+                  if (projectTestDirs.includes(baseName) || parent === workDir) {
+                    break;
+                  }
+                  testRoot = parent;
+                }
+                if (!testDirs.includes(testRoot) && testRoot !== workDir) {
+                  testDirs.push(testRoot);
+                }
+              }
+            }
+          }
+          
+          // 4. Analyze existing test tech stack for proper framework selection
           const existingTestFrameworks = new Set();
           if (existingTests) {
             Object.values(existingTests).forEach(tests => {

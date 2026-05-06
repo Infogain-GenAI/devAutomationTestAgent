@@ -51,6 +51,9 @@ class TestRunner {
 
     logger.info(`Running Playwright tests in ${testDir}`);
 
+    // Ensure @playwright/test is available from the generated-tests directory
+    await TestRunner._ensurePlaywrightInstalled(testDir, workDir);
+
     const args = [
       'playwright', 'test',
       '--config', `"${configFile}"`
@@ -167,6 +170,95 @@ class TestRunner {
       proc.on('error', (err) => {
         logger.error(`Failed to spawn Playwright: ${err.message}`);
         reject(err);
+      });
+    });
+  }
+
+  /**
+   * Ensure @playwright/test is resolvable from the generated-tests directory.
+   * If the project already has it in node_modules, symlink or skip. Otherwise install.
+   */
+  static async _ensurePlaywrightInstalled(testDir, workDir) {
+    // Check if @playwright/test is already resolvable from testDir
+    try {
+      require.resolve('@playwright/test', { paths: [testDir] });
+      logger.info('@playwright/test already available for generated tests');
+      return;
+    } catch (_) {
+      // Not found — need to make it available
+    }
+
+    // Check if it exists in project's node_modules (or src/node_modules)
+    const possiblePaths = [
+      path.join(workDir, 'node_modules', '@playwright', 'test'),
+      path.join(workDir, 'src', 'node_modules', '@playwright', 'test'),
+      path.join(workDir, 'app', 'node_modules', '@playwright', 'test')
+    ];
+
+    let existingPath = null;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        existingPath = path.dirname(path.dirname(p)); // point to node_modules dir
+        break;
+      }
+    }
+
+    if (existingPath) {
+      // Create a package.json in generated-tests that redirects resolution
+      const genPkgPath = path.join(testDir, 'package.json');
+      if (!fs.existsSync(genPkgPath)) {
+        fs.writeFileSync(genPkgPath, JSON.stringify({
+          name: 'ignis-generated-tests',
+          private: true,
+          dependencies: {}
+        }, null, 2));
+      }
+
+      // Create node_modules symlink or install locally
+      const genNodeModules = path.join(testDir, 'node_modules');
+      if (!fs.existsSync(genNodeModules)) {
+        try {
+          fs.symlinkSync(existingPath, genNodeModules, 'junction');
+          logger.info(`Linked project node_modules to generated-tests for @playwright/test`);
+          return;
+        } catch (e) {
+          logger.warn(`Could not symlink node_modules: ${e.message}, will install directly`);
+        }
+      } else {
+        return; // already exists
+      }
+    }
+
+    // Fallback: install @playwright/test directly in generated-tests
+    logger.info('Installing @playwright/test in generated-tests directory...');
+    const genPkgPath = path.join(testDir, 'package.json');
+    if (!fs.existsSync(genPkgPath)) {
+      fs.writeFileSync(genPkgPath, JSON.stringify({
+        name: 'ignis-generated-tests',
+        private: true,
+        dependencies: { '@playwright/test': '*' }
+      }, null, 2));
+    }
+
+    return new Promise((resolve, reject) => {
+      const proc = spawn('npm', ['install', '--no-save', '@playwright/test'], {
+        cwd: testDir,
+        shell: true,
+        stdio: 'pipe',
+        timeout: 60000,
+        env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }
+      });
+      proc.on('close', (code) => {
+        if (code === 0) {
+          logger.info('@playwright/test installed in generated-tests');
+        } else {
+          logger.warn(`@playwright/test install exited with code ${code} — tests may fail`);
+        }
+        resolve();
+      });
+      proc.on('error', (err) => {
+        logger.warn(`Failed to install @playwright/test: ${err.message}`);
+        resolve(); // don't block — let tests fail with the original error
       });
     });
   }

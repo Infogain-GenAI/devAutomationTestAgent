@@ -225,8 +225,9 @@ class UnitTestRunner {
           } else {
             dirGlob = `{${relDirs.join(',')}}`;
           }
-          args.push('--testMatch', `**/${dirGlob}/**/*.test.{js,ts}`);
-          args.push('--testPathIgnorePatterns', '/node_modules/', '.*\\.spec\\.js$');
+          args.push('--testMatch', `**/${dirGlob}/**/*.{test,spec}.{js,ts,jsx,tsx}`);
+          // Only ignore node_modules and generated-tests spec files (those are Playwright e2e)
+          args.push('--testPathIgnorePatterns', '/node_modules/', 'generated-tests/tests/.*.spec\\.');
         }
       } else {
         // Mocha: pass all test files directly
@@ -465,7 +466,12 @@ class UnitTestRunner {
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             walk(fullPath);
-          } else if (entry.name.endsWith('.test.js') || entry.name.endsWith('.test.ts')) {
+          } else if (
+            entry.name.endsWith('.test.js') || entry.name.endsWith('.test.ts') ||
+            entry.name.endsWith('.test.jsx') || entry.name.endsWith('.test.tsx') ||
+            entry.name.endsWith('.spec.js') || entry.name.endsWith('.spec.ts') ||
+            entry.name.endsWith('.spec.jsx') || entry.name.endsWith('.spec.tsx')
+          ) {
             files.push(fullPath);
           }
         }
