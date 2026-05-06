@@ -240,28 +240,46 @@ class UnitTestRunner {
 
     // If project config failed with 0 tests, determine whether it's a config issue or broken spec files
     if (jestConfigPath && results.exitCode !== 0 && results.total === 0 && framework === 'jest') {
-      const brokenFiles = this._extractBrokenSpecFiles(results.errors, results.rawOutput, jestCwd);
-      
-      if (brokenFiles.length > 0) {
-        // Broken spec files detected — attempt to fix them, then retry WITH project config
-        logger.warn(`Found ${brokenFiles.length} broken spec file(s): ${brokenFiles.map(f => f.file).join(', ')}`);
-        const fixed = await this._fixBrokenSpecFiles(brokenFiles, jestCwd);
-        if (fixed > 0) {
-          logger.info(`Fixed ${fixed} spec file(s). Retrying with project jest config...`);
+      // Check if the error is a missing jest-environment-jsdom (install it and retry)
+      if (results.errors.includes('jest-environment-jsdom') && results.errors.includes('cannot be found')) {
+        logger.info('jest-environment-jsdom missing — installing and retrying...');
+        try {
+          const { execSync } = require('child_process');
+          execSync('npm install --save-dev jest-environment-jsdom', {
+            cwd: jestCwd, stdio: 'pipe', timeout: 60000
+          });
           results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+        } catch (installErr) {
+          logger.warn(`Failed to install jest-environment-jsdom: ${installErr.message}`);
         }
+      }
+      
+      // If still failing with 0 tests, check for broken spec files or config issues
+      if (results.exitCode !== 0 && results.total === 0) {
+        const brokenFiles = this._extractBrokenSpecFiles(results.errors, results.rawOutput, jestCwd);
+      
+        if (brokenFiles.length > 0) {
+          // Broken spec files detected — attempt to fix them, then retry WITH project config
+          logger.warn(`Found ${brokenFiles.length} broken spec file(s): ${brokenFiles.map(f => f.file).join(', ')}`);
+          const fixed = await this._fixBrokenSpecFiles(brokenFiles, jestCwd);
+          if (fixed > 0) {
+            logger.info(`Fixed ${fixed} spec file(s). Retrying with project jest config...`);
+            results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+          }
         
-        // If still 0 tests after fixing spec files, fall back to no config
-        if (results.exitCode !== 0 && results.total === 0) {
-          logger.warn(`Still 0 tests after fixing spec files. Stderr: ${results.errors.slice(0, 300)}`);
-          logger.info('Retrying without project jest.config.js...');
+          // If still 0 tests after fixing spec files, fall back to no config (node env, no .spec files)
+          if (results.exitCode !== 0 && results.total === 0) {
+            logger.warn(`Still 0 tests after fixing spec files. Stderr: ${results.errors.slice(0, 300)}`);
+            logger.info('Retrying without project jest.config.js (backend unit tests only)...');
+            results = await this._executeJest(framework, null, jestCwd, dirs);
+          }
+        } else {
+          // No broken spec files identified — likely a config/transform issue
+          // Fall back to running only backend-compatible tests (node env, no .spec files)
+          logger.warn(`Jest config error (0 tests ran). Stderr: ${results.errors.slice(0, 500)}`);
+          logger.info('Retrying without project jest.config.js (backend unit tests only)...');
           results = await this._executeJest(framework, null, jestCwd, dirs);
         }
-      } else {
-        // No broken spec files identified — likely a config/transform issue
-        logger.warn(`Jest config error (0 tests ran). Stderr: ${results.errors.slice(0, 500)}`);
-        logger.info('Retrying without project jest.config.js (using testMatch patterns instead)...');
-        results = await this._executeJest(framework, null, jestCwd, dirs);
       }
     }
     
@@ -302,13 +320,14 @@ class UnitTestRunner {
           args.push('--config', relConfigPath || 'jest.config.js');
         } else {
           // No config — pass test files directly to Jest as path patterns
-          // Also pass an empty config to prevent Jest auto-detecting project jest.config.js
-          args.push('--config', '{}');
+          // Use node testEnvironment (no jsdom needed for backend API unit tests)
+          // Exclude: .spec. files (Playwright), .ts/.tsx files (need TypeScript transform)
+          args.push('--config', JSON.stringify({ testEnvironment: 'node' }));
           const relDirs = dirs.map(d => path.relative(cwd, d).replace(/\\/g, '/'));
           for (const relDir of relDirs) {
             args.push(relDir);
           }
-          args.push('--testPathIgnorePatterns', '/node_modules/', 'generated-tests/tests/.*.spec\\.');
+          args.push('--testPathIgnorePatterns', '/node_modules/', '.*\\.spec\\.', '.*\\.test\\.ts$', '.*\\.test\\.tsx$');
         }
       } else {
         const testFileGlobs = dirs.map(d => `"${path.join(d, '**/*.test.js')}"`);
@@ -800,11 +819,17 @@ class UnitTestRunner {
           if (entry.isDirectory()) {
             walk(fullPath);
           } else if (
-            entry.name.endsWith('.test.js') || entry.name.endsWith('.test.ts') ||
-            entry.name.endsWith('.test.jsx') || entry.name.endsWith('.test.tsx') ||
-            entry.name.endsWith('.spec.js') || entry.name.endsWith('.spec.ts') ||
-            entry.name.endsWith('.spec.jsx') || entry.name.endsWith('.spec.tsx')
+            // Only pick up .test.js/.test.ts — NOT .spec.js/.spec.ts (those are Playwright/E2E tests)
+            (entry.name.endsWith('.test.js') || entry.name.endsWith('.test.ts')) &&
+            !entry.name.endsWith('.spec.js') && !entry.name.endsWith('.spec.ts')
           ) {
+            // Skip files that import from @playwright/test (they're E2E, not unit tests)
+            try {
+              const content = fs.readFileSync(fullPath, 'utf-8').slice(0, 500);
+              if (content.includes('@playwright/test') || content.includes('playwright')) {
+                continue;
+              }
+            } catch {}
             files.push(fullPath);
           }
         }

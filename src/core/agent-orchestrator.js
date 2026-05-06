@@ -282,7 +282,11 @@ class AgentOrchestrator {
           }
           
           // 2. Add existing project test directories (root + subdirectories)
+          // Only include BACKEND test directories (api, lib, middleware, services, utils, etc.)
+          // Skip FRONTEND test directories (components, pages, dashboard, ui, views, layout, etc.)
           const projectTestDirs = ['__tests__', 'tests', 'test', 'spec'];
+          const frontendDirPatterns = ['components', 'pages', 'dashboard', 'ui', 'views', 'layout', 'widgets', 'hooks', 'features', 'screens'];
+          
           // Check root-level AND common subdirectory locations (e.g., src/)
           const searchRoots = [workDir];
           const subDirs = ['src', 'app', 'lib', 'packages'];
@@ -296,6 +300,13 @@ class AgentOrchestrator {
             for (const dir of projectTestDirs) {
               const candidate = path.join(root, dir);
               if (fs.existsSync(candidate) && candidate !== generatedTestDir && !testDirs.includes(candidate)) {
+                // Check if this test dir is inside a frontend-specific directory
+                const relativePath = path.relative(workDir, candidate).toLowerCase().replace(/\\/g, '/');
+                const isFrontendTest = frontendDirPatterns.some(pattern => relativePath.includes(`/${pattern}/`) || relativePath.startsWith(`${pattern}/`));
+                if (isFrontendTest) {
+                  logger.info(`Skipping frontend test dir (not for Jest): ${path.relative(workDir, candidate)}`);
+                  continue;
+                }
                 testDirs.push(candidate);
               }
             }
@@ -324,9 +335,12 @@ class AgentOrchestrator {
                 if (!testDirs.includes(testRoot) && testRoot !== workDir && fs.existsSync(testRoot)) {
                   // Skip if this dir is a child of an already-added test dir
                   const alreadyCovered = testDirs.some(existing => testRoot.startsWith(existing + path.sep));
-                  if (!alreadyCovered) {
-                    testDirs.push(testRoot);
-                  }
+                  if (alreadyCovered) continue;
+                  // Skip frontend test directories
+                  const relativePath = path.relative(workDir, testRoot).toLowerCase().replace(/\\/g, '/');
+                  const isFrontendTest = frontendDirPatterns.some(pattern => relativePath.includes(`/${pattern}/`) || relativePath.startsWith(`${pattern}/`));
+                  if (isFrontendTest) continue;
+                  testDirs.push(testRoot);
                 }
               }
             }

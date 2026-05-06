@@ -415,7 +415,7 @@ class TestGenerator {
 const { defineConfig, devices } = require('@playwright/test');
 
 module.exports = defineConfig({
-  testDir: '.',
+  testDir: './tests',
   testMatch: ${JSON.stringify(testDirs)},
   fullyParallel: true,
   forbidOnly: !!process.env.CI,

@@ -168,6 +168,20 @@ class TestRunner {
           logger.warn(`Playwright stderr (exit ${code}): ${stderr.slice(0, 800)}`);
         }
         
+        // If 0 tests ran but Playwright exited with error, log stdout too for diagnostics
+        if (code !== 0 && parsed.total === 0) {
+          if (stdout.trim()) {
+            logger.warn(`Playwright stdout (0 tests, exit ${code}): ${stdout.slice(0, 800)}`);
+          }
+          // Check for common issues
+          if (stdout.includes('no tests found') || stdout.includes('No tests found')) {
+            logger.warn('Playwright found no matching test files — check testDir and testMatch in playwright.config.js');
+          }
+          if (stdout.includes('browserType.launch') || stdout.includes('Executable doesn\'t exist') || stderr.includes('browserType.launch')) {
+            logger.warn('Playwright browser launch failed — likely a version mismatch with installed browsers');
+          }
+        }
+        
         // Write detailed test results to separate log file
         TestRunner.writeDetailedTestLog(parsed, workDir, testLogFile);
         
@@ -186,79 +200,153 @@ class TestRunner {
    * Matches the installed playwright CLI version to avoid mismatches.
    */
   static async _ensurePlaywrightInstalled(testDir, workDir) {
-    // Check if @playwright/test is already resolvable from testDir
+    // Check if @playwright/test is already resolvable from testDir AND version matches container
     try {
-      require.resolve('@playwright/test', { paths: [testDir] });
-      logger.info('@playwright/test already available for generated tests');
-      return;
+      const resolvedPath = require.resolve('@playwright/test/package.json', { paths: [testDir] });
+      const installedPkg = JSON.parse(fs.readFileSync(resolvedPath, 'utf-8'));
+      const installedVersion = installedPkg.version;
+      
+      // In container: verify the installed version matches the container's browser version
+      if (process.env.DOCKER_CONTAINER === 'true') {
+        // Container's browsers are for 1.50.0 — only accept that version
+        const containerVersion = '1.50.0';
+        if (installedVersion && installedVersion.startsWith(containerVersion.split('.').slice(0, 2).join('.'))) {
+          logger.info(`@playwright/test@${installedVersion} already available for generated tests`);
+          return;
+        } else {
+          logger.info(`Installed @playwright/test@${installedVersion} doesn't match container browsers (${containerVersion}) — reinstalling`);
+          // Remove existing node_modules/@playwright to force fresh install
+          const existingPwDir = path.join(testDir, 'node_modules', '@playwright');
+          if (fs.existsSync(existingPwDir)) {
+            fs.rmSync(existingPwDir, { recursive: true, force: true });
+          }
+        }
+      } else {
+        logger.info(`@playwright/test@${installedVersion} already available for generated tests`);
+        return;
+      }
     } catch (_) {
-      // Not found — need to make it available
+      // Not found — need to install
     }
 
     // Check if it exists in project's node_modules (or src/node_modules)
-    const possiblePaths = [
-      path.join(workDir, 'node_modules', '@playwright', 'test'),
-      path.join(workDir, 'src', 'node_modules', '@playwright', 'test'),
-      path.join(workDir, 'app', 'node_modules', '@playwright', 'test')
-    ];
+    // IMPORTANT: Do NOT reuse project's Playwright in container — version may not match browsers
+    if (process.env.DOCKER_CONTAINER !== 'true') {
+      const possiblePaths = [
+        path.join(workDir, 'node_modules', '@playwright', 'test'),
+        path.join(workDir, 'src', 'node_modules', '@playwright', 'test'),
+        path.join(workDir, 'app', 'node_modules', '@playwright', 'test')
+      ];
 
-    let existingPath = null;
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        existingPath = path.dirname(path.dirname(p)); // point to node_modules dir
-        break;
-      }
-    }
-
-    if (existingPath) {
-      // Create node_modules symlink to reuse existing installation
-      const genNodeModules = path.join(testDir, 'node_modules');
-      if (!fs.existsSync(genNodeModules)) {
-        try {
-          fs.symlinkSync(existingPath, genNodeModules, 'junction');
-          logger.info(`Linked project node_modules to generated-tests for @playwright/test`);
-          return;
-        } catch (e) {
-          logger.warn(`Could not symlink node_modules: ${e.message}, will install directly`);
+      let existingPath = null;
+      for (const p of possiblePaths) {
+        if (fs.existsSync(p)) {
+          existingPath = path.dirname(path.dirname(p)); // point to node_modules dir
+          break;
         }
-      } else {
-        return; // already exists
+      }
+
+      if (existingPath) {
+        // Create node_modules symlink to reuse existing installation
+        const genNodeModules = path.join(testDir, 'node_modules');
+        if (!fs.existsSync(genNodeModules)) {
+          try {
+            fs.symlinkSync(existingPath, genNodeModules, 'junction');
+            logger.info(`Linked project node_modules to generated-tests for @playwright/test`);
+            return;
+          } catch (e) {
+            logger.warn(`Could not symlink node_modules: ${e.message}, will install directly`);
+          }
+        } else {
+          return; // already exists
+        }
       }
     }
 
     // Detect installed playwright CLI version to avoid mismatch
-    // IMPORTANT: Run from tmpdir to avoid picking up project's local @playwright/test
-    // (project might have a newer version than the container's pre-installed browsers)
+    // IMPORTANT: Detect the version that matches the container's pre-installed browsers.
+    // Project may have a different Playwright version — we MUST use the container's version.
     let playwrightVersion = '';
     try {
       const { execSync } = require('child_process');
       const os = require('os');
       
-      // First: try to get the container's global playwright-core version (matches pre-installed browsers)
-      try {
-        const globalVersion = execSync(
-          'node -e "try{console.log(require(\'playwright-core/package.json\').version)}catch(e){}"',
-          { stdio: 'pipe', timeout: 10000, cwd: os.tmpdir() }
-        ).toString().trim();
-        if (globalVersion && /^\d+\.\d+\.\d+$/.test(globalVersion)) {
-          playwrightVersion = globalVersion;
-          logger.info(`Detected container Playwright version: ${playwrightVersion}`);
+      // Method 1: In container (DOCKER_CONTAINER=true), read from /app/node_modules/playwright-core
+      // This is the agent's own installed version which matches the Dockerfile browser install
+      if (process.env.DOCKER_CONTAINER === 'true') {
+        try {
+          const agentPkgPath = '/app/node_modules/playwright-core/package.json';
+          if (fs.existsSync(agentPkgPath)) {
+            const pkg = JSON.parse(fs.readFileSync(agentPkgPath, 'utf-8'));
+            if (pkg.version && /^\d+\.\d+\.\d+$/.test(pkg.version)) {
+              playwrightVersion = pkg.version;
+              logger.info(`Detected container Playwright version (from agent): ${playwrightVersion}`);
+            }
+          }
+        } catch (_) {}
+        
+        // Method 1b: Check /ms-playwright directory for browser version markers
+        if (!playwrightVersion) {
+          try {
+            const msPlaywright = '/ms-playwright';
+            if (fs.existsSync(msPlaywright)) {
+              const dirs = fs.readdirSync(msPlaywright);
+              // Look for chromium-XXXX directories with .json metadata
+              for (const dir of dirs) {
+                const infoFile = path.join(msPlaywright, dir, 'INSTALLATION_COMPLETE');
+                if (fs.existsSync(infoFile)) {
+                  // The Dockerfile uses playwright:v1.50.0 image — extract from agent package
+                  break;
+                }
+              }
+            }
+          } catch (_) {}
         }
-      } catch (_) {}
-
-      // Fallback: npx playwright --version from tmpdir (avoids project's local version)
+      }
+      
+      // Method 2: Try to require playwright-core from the system (not from project workDir)
       if (!playwrightVersion) {
-        const versionOutput = execSync('npx playwright --version', {
-          stdio: 'pipe', timeout: 15000, cwd: os.tmpdir()
-        }).toString().trim();
-        const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+)/);
-        if (versionMatch) {
-          playwrightVersion = versionMatch[1];
-          logger.info(`Detected Playwright CLI version: ${playwrightVersion}`);
-        }
+        try {
+          const globalVersion = execSync(
+            'node -e "try{console.log(require(\'playwright-core/package.json\').version)}catch(e){}"',
+            { stdio: 'pipe', timeout: 10000, cwd: os.tmpdir() }
+          ).toString().trim();
+          if (globalVersion && /^\d+\.\d+\.\d+$/.test(globalVersion)) {
+            playwrightVersion = globalVersion;
+            logger.info(`Detected system Playwright version: ${playwrightVersion}`);
+          }
+        } catch (_) {}
+      }
+
+      // Method 3: npx playwright --version from /tmp (avoids project's local version)
+      // But explicitly set PATH to exclude /workspace to prevent picking up project's version
+      if (!playwrightVersion) {
+        try {
+          const env = { ...process.env };
+          // Remove workspace paths from NODE_PATH to avoid project's playwright
+          delete env.NODE_PATH;
+          const versionOutput = execSync('npx playwright --version', {
+            stdio: 'pipe', timeout: 15000, cwd: os.tmpdir(), env
+          }).toString().trim();
+          const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+)/);
+          if (versionMatch) {
+            playwrightVersion = versionMatch[1];
+            logger.info(`Detected Playwright CLI version: ${playwrightVersion}`);
+          }
+        } catch (_) {}
+      }
+      
+      // Method 4: If in container and still no version, use the known Dockerfile version
+      if (!playwrightVersion && process.env.DOCKER_CONTAINER === 'true') {
+        playwrightVersion = '1.50.0'; // From Dockerfile: mcr.microsoft.com/playwright:v1.50.0-noble
+        logger.info(`Using hardcoded container Playwright version: ${playwrightVersion}`);
       }
     } catch (e) {
       logger.warn(`Could not detect playwright version: ${e.message}`);
+      // Final fallback for container
+      if (process.env.DOCKER_CONTAINER === 'true') {
+        playwrightVersion = '1.50.0';
+      }
     }
 
     // Install @playwright/test at the matching version
