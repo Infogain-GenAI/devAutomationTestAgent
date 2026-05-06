@@ -11,6 +11,29 @@ class UnitTestRunner {
   }
 
   /**
+   * Check package.json for explicitly declared test framework (highest priority)
+   */
+  _getFrameworkFromPackageJson(workDir) {
+    const packageJsonPath = path.join(workDir, 'package.json');
+    if (!fs.existsSync(packageJsonPath)) return null;
+
+    try {
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+      const deps = {
+        ...packageJson.dependencies,
+        ...packageJson.devDependencies
+      };
+
+      if (deps['jest'] || deps['@jest/globals']) return 'jest';
+      if (deps['mocha']) return 'mocha';
+      if (deps['vitest']) return 'vitest';
+    } catch (err) {
+      logger.warn(`Failed to parse package.json: ${err.message}`);
+    }
+    return null;
+  }
+
+  /**
    * Detect which test framework to use (Jest or Mocha)
    */
   detectTestFramework(workDir) {
@@ -119,14 +142,21 @@ class UnitTestRunner {
     // Normalize to array
     const dirs = Array.isArray(testDirs) ? testDirs : [testDirs];
     
-    // Detect framework — prefer existing test framework if detected
+    // Detect framework — prioritize package.json, then scanner heuristics, then default
     let framework;
-    if (options.detectedFrameworks && options.detectedFrameworks.length > 0) {
-      // Use the framework already used in existing tests
-      framework = options.detectedFrameworks[0]; // e.g., 'jest', 'mocha'
+    const packageJsonFramework = this._getFrameworkFromPackageJson(workDir);
+    if (packageJsonFramework) {
+      // package.json explicitly declares a test framework — highest priority
+      framework = packageJsonFramework;
+      logger.info(`Using test framework from package.json: ${framework}`);
+    } else if (options.detectedFrameworks && options.detectedFrameworks.length > 0) {
+      // Fall back to framework detected from test file content
+      framework = options.detectedFrameworks[0];
       logger.info(`Using detected test framework: ${framework}`);
     } else {
-      framework = this.detectTestFramework(workDir);
+      // Default
+      framework = 'jest';
+      logger.info('No test framework detected, defaulting to jest');
     }
     
     // Collect all unit test files from all directories
