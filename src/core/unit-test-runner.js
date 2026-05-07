@@ -319,15 +319,18 @@ class UnitTestRunner {
           const relConfigPath = path.relative(cwd, configPath);
           args.push('--config', relConfigPath || 'jest.config.js');
         } else {
-          // No config — pass test files directly to Jest as path patterns
-          // Use node testEnvironment (no jsdom needed for backend API unit tests)
-          // Exclude: .spec. files (Playwright), .ts/.tsx files (need TypeScript transform)
-          args.push('--config', JSON.stringify({ testEnvironment: 'node' }));
+          // No config — write a temporary jest config file for backend-only mode
+          // (Inline JSON via --config is unreliable on Windows PowerShell due to quote escaping)
+          const tmpConfigPath = path.join(cwd, '.jest.backend.config.json');
+          fs.writeFileSync(tmpConfigPath, JSON.stringify({
+            testEnvironment: 'node',
+            testPathIgnorePatterns: ['/node_modules/', '.*\\.spec\\.', '.*\\.test\\.ts$', '.*\\.test\\.tsx$']
+          }, null, 2), 'utf-8');
+          args.push('--config', '.jest.backend.config.json');
           const relDirs = dirs.map(d => path.relative(cwd, d).replace(/\\/g, '/'));
           for (const relDir of relDirs) {
             args.push(relDir);
           }
-          args.push('--testPathIgnorePatterns', '/node_modules/', '.*\\.spec\\.', '.*\\.test\\.ts$', '.*\\.test\\.tsx$');
         }
       } else {
         const testFileGlobs = dirs.map(d => `"${path.join(d, '**/*.test.js')}"`);

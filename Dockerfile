@@ -8,8 +8,10 @@ LABEL description="IGNIS Automation Test Agent - AI-powered testing with Playwri
 WORKDIR /app
 
 # Copy package files and install (production only)
-COPY package.json package-lock.json* ./
-RUN npm ci --production --no-audit --no-fund && \
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 avoids downloading browsers here (done explicitly below)
+# NOTE: package-lock.json is REQUIRED for npm ci (run 'npm install' locally to generate it)
+COPY package.json package-lock.json ./
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --omit=dev --no-audit --no-fund && \
     npm cache clean --force
 
 # Copy source code and configuration
