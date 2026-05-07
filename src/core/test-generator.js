@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const logger = require('../utils/logger');
 
 class TestGenerator {
@@ -133,6 +134,9 @@ class TestGenerator {
       writtenFiles.push(safePath);
       logger.debug(`Written test file: ${safePath}`);
     }
+
+    // Validate syntax of all generated .js/.ts files before running tests
+    await this._validateAndFixSyntax(outputDir, writtenFiles);
 
     return { files: writtenFiles, gaps: gaps ? gaps.length : 0 };
   }
@@ -421,6 +425,7 @@ module.exports = defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
+  maxFailures: 0,
   reporter: [
     ['json', { outputFile: '../test-results/results.json' }],
     ['html', { outputFolder: '../playwright-report', open: 'never' }],
@@ -482,8 +487,178 @@ module.exports = {
     fs.writeFileSync(configPath, config, 'utf-8');
     logger.info('Generated jest.config.js for unit tests');
   }
-}
 
-module.exports = TestGenerator;
+  /**
+   * Validate syntax of generated test files and attempt AI-powered fix for broken ones.
+   * Removes files that cannot be fixed to prevent Playwright from choking on parse errors.
+   */
+  async _validateAndFixSyntax(outputDir, writtenFiles) {
+    const jsFiles = writtenFiles.filter(f => f.endsWith('.js') || f.endsWith('.mjs'));
+    if (jsFiles.length === 0) return;
+
+    const broken = [];
+
+    for (const relPath of jsFiles) {
+      const fullPath = path.join(outputDir, relPath);
+      if (!fs.existsSync(fullPath)) continue;
+
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      const error = this._checkSyntax(content, relPath);
+      if (error) {
+        broken.push({ relPath, fullPath, content, error });
+      }
+    }
+
+    if (broken.length === 0) {
+      logger.info(`✅ All ${jsFiles.length} generated test file(s) passed syntax validation`);
+      return;
+    }
+
+    logger.warn(`⚠️ ${broken.length}/${jsFiles.length} generated file(s) have syntax errors — attempting auto-fix`);
+
+    for (const { relPath, fullPath, content, error } of broken) {
+      logger.warn(`   ${relPath}: ${error}`);
+
+      // Attempt AI-powered syntax fix
+      let fixed = false;
+      try {
+        const fixedContent = await this._aiFixSyntax(content, error, relPath);
+        if (fixedContent) {
+          const recheckError = this._checkSyntax(fixedContent, relPath);
+          if (!recheckError) {
+            fs.writeFileSync(fullPath, fixedContent, 'utf-8');
+            logger.info(`   ✅ Fixed syntax in ${relPath}`);
+            fixed = true;
+          } else {
+            logger.warn(`   AI fix still has errors: ${recheckError}`);
+          }
+        }
+      } catch (err) {
+        logger.warn(`   AI syntax fix failed: ${err.message}`);
+      }
+
+      // If AI couldn't fix it, remove the file so it doesn't block other tests
+      if (!fixed) {
+        logger.warn(`   🗑️  Removing broken file: ${relPath} (would block all Playwright tests)`);
+        fs.unlinkSync(fullPath);
+        // Remove from writtenFiles array
+        const idx = writtenFiles.indexOf(relPath);
+        if (idx !== -1) writtenFiles.splice(idx, 1);
+      }
+    }
+  }
+
+  /**
+   * Check JavaScript syntax using vm.Script (Node.js built-in parser).
+   * Returns error message string if invalid, null if valid.
+   */
+  _checkSyntax(code, filename) {
+    try {
+      new vm.Script(code, { filename, displayErrors: false });
+      return null;
+    } catch (err) {
+      // Extract concise error message (line:col + description)
+      const match = err.message.match(/^(.*?)(\n|$)/);
+      return match ? match[1] : err.message;
+    }
+  }
+
+  /**
+   * Ask AI provider to fix syntax errors in generated code.
+   */
+  async _aiFixSyntax(brokenCode, syntaxError, filename) {
+    // Try basic auto-fix first (fast, no API call needed)
+    const basicFix = this._attemptBasicSyntaxFix(brokenCode, syntaxError);
+    if (basicFix) {
+      const recheckError = this._checkSyntax(basicFix, filename);
+      if (!recheckError) return basicFix;
+    }
+
+    // Try AI-powered fix via generateFix
+    if (!this.aiProvider || !this.aiProvider.generateFix) return basicFix;
+
+    try {
+      const failureAnalysis = {
+        summary: `Generated test file has a JavaScript syntax error that prevents it from being parsed.`,
+        rootCause: `Syntax error in ${filename}: ${syntaxError}`,
+        fixes: [{
+          file: filename,
+          description: `Fix the syntax error: ${syntaxError}`,
+          type: 'syntax-fix'
+        }]
+      };
+
+      const sourceCode = { [`test:${filename}`]: brokenCode };
+      const fixes = await this.aiProvider.generateFix(failureAnalysis, sourceCode);
+
+      if (Array.isArray(fixes) && fixes.length > 0) {
+        // Apply the fix to get corrected content
+        for (const fix of fixes) {
+          if (fix.fixedCode && fix.originalCode) {
+            const result = brokenCode.replace(fix.originalCode, fix.fixedCode);
+            if (result !== brokenCode) return result;
+          } else if (fix.fixedCode && !fix.originalCode) {
+            // Full file replacement
+            return fix.fixedCode;
+          }
+        }
+      }
+    } catch (err) {
+      logger.debug(`AI syntax fix API call failed: ${err.message}`);
+    }
+
+    return basicFix;
+  }
+
+  /**
+   * Attempt common automatic syntax fixes without AI.
+   * Handles: unmatched parentheses on statement lines (ending with ;).
+   */
+  _attemptBasicSyntaxFix(code, error) {
+    let fixed = code;
+
+    // Strategy: balance parentheses ONLY on lines that are self-contained statements (end with ;)
+    // Skip lines ending with { or } (multi-line block openers/closers)
+    const lines = fixed.split('\n');
+    let modified = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trimEnd();
+      
+      // Only attempt fix on lines ending with ; (self-contained statements)
+      if (!trimmed.endsWith(';')) continue;
+
+      let openParens = 0;
+      // Count parens ignoring string contents
+      let inSingle = false, inDouble = false, inTemplate = false;
+      for (let j = 0; j < trimmed.length; j++) {
+        const ch = trimmed[j];
+        const prev = j > 0 ? trimmed[j - 1] : '';
+        
+        if (prev === '\\') continue; // Skip escaped chars
+        
+        if (ch === "'" && !inDouble && !inTemplate) inSingle = !inSingle;
+        else if (ch === '"' && !inSingle && !inTemplate) inDouble = !inDouble;
+        else if (ch === '`' && !inSingle && !inDouble) inTemplate = !inTemplate;
+        else if (!inSingle && !inDouble && !inTemplate) {
+          if (ch === '(') openParens++;
+          else if (ch === ')') openParens--;
+        }
+      }
+
+      if (openParens > 0) {
+        const closing = ')'.repeat(openParens);
+        lines[i] = trimmed.replace(/;$/, closing + ';');
+        modified = true;
+      }
+    }
+
+    if (modified) {
+      return lines.join('\n');
+    }
+
+    return null; // No basic fix found
+  }
+}
 
 module.exports = TestGenerator;
