@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const logger = require('../utils/logger');
 
-const TEST_TIMEOUT = 5 * 60 * 1000; // 5 minutes per test run
+const TEST_TIMEOUT = 10 * 60 * 1000; // 10 minutes per test run
 
 class TestRunner {
   /**
@@ -54,9 +54,13 @@ class TestRunner {
     // Ensure @playwright/test is available from the generated-tests directory
     await TestRunner._ensurePlaywrightInstalled(testDir, workDir);
 
+    // Global timeout: cap the entire test run to 8 minutes to prevent CI job timeouts
+    const globalTimeout = config.globalTimeout || parseInt(process.env.PW_GLOBAL_TIMEOUT) || 8 * 60 * 1000;
+
     const args = [
       'playwright', 'test',
-      '--config', 'playwright.config.js'
+      '--config', 'playwright.config.js',
+      '--global-timeout', String(globalTimeout)
     ];
 
     if (config.grep) {

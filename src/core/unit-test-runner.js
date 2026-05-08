@@ -243,14 +243,34 @@ class UnitTestRunner {
       // Check if the error is a missing jest-environment-jsdom (install it and retry)
       if (results.errors.includes('jest-environment-jsdom') && results.errors.includes('cannot be found')) {
         logger.info('jest-environment-jsdom missing — installing and retrying...');
-        try {
-          const { execSync } = require('child_process');
-          execSync('npm install --save-dev jest-environment-jsdom', {
-            cwd: jestCwd, stdio: 'pipe', timeout: 60000
-          });
+        let jsdomInstalled = false;
+        const { execSync } = require('child_process');
+        
+        // Try multiple install strategies (production env blocks --save-dev, permissions vary)
+        const installStrategies = [
+          { cmd: 'npm install --save-dev jest-environment-jsdom', desc: 'local devDep' },
+          { cmd: 'npm install --no-save jest-environment-jsdom', desc: 'local no-save' },
+          { cmd: 'npm install -g jest-environment-jsdom', desc: 'global' }
+        ];
+        
+        for (const strategy of installStrategies) {
+          try {
+            execSync(strategy.cmd, {
+              cwd: jestCwd, stdio: 'pipe', timeout: 60000,
+              env: { ...process.env, NODE_ENV: 'development' } // Override to allow devDep install
+            });
+            logger.info(`jest-environment-jsdom installed (${strategy.desc})`);
+            jsdomInstalled = true;
+            break;
+          } catch (err) {
+            logger.debug(`Install strategy "${strategy.desc}" failed: ${err.message.slice(0, 100)}`);
+          }
+        }
+        
+        if (jsdomInstalled) {
           results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
-        } catch (installErr) {
-          logger.warn(`Failed to install jest-environment-jsdom: ${installErr.message}`);
+        } else {
+          logger.warn('Failed to install jest-environment-jsdom with all strategies');
         }
       }
       
@@ -314,7 +334,7 @@ class UnitTestRunner {
     return new Promise((resolve, reject) => {
       let args;
       if (framework === 'jest') {
-        args = ['--json', '--forceExit'];
+        args = ['--json', '--forceExit', '--passWithNoTests'];
         if (configPath) {
           const relConfigPath = path.relative(cwd, configPath);
           args.push('--config', relConfigPath || 'jest.config.js');

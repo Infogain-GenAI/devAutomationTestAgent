@@ -36,7 +36,7 @@ RUN git config --global user.email "sumit.joshi@infogain.com" && \
     git config --global init.defaultBranch main
 
 # Pre-install Jest and Mocha globally so unit test runner always has them available
-RUN npm install -g jest mocha chai
+RUN npm install -g jest mocha chai jest-environment-jsdom
 
 # Switch to non-root user for security
 USER pwuser

@@ -423,20 +423,19 @@ module.exports = defineConfig({
   testMatch: ${JSON.stringify(testDirs)},
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  retries: process.env.CI ? 1 : 0,
+  workers: process.env.CI ? 2 : undefined,
   maxFailures: 0,
   reporter: [
     ['json', { outputFile: '../test-results/results.json' }],
-    ['html', { outputFolder: '../playwright-report', open: 'never' }],
     ['list']
   ],
   use: {
     baseURL: process.env.APP_URL || '${baseUrl}',
     headless: true,
-    trace: 'on-first-retry',
+    trace: 'off',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure'
+    video: 'off'
   },
   projects: [
     {
@@ -444,7 +443,7 @@ module.exports = defineConfig({
       use: { ...devices['Desktop Chrome'], headless: true }
     }
   ],
-  timeout: 30000,
+  timeout: 15000,
   expect: {
     timeout: 5000
   }
