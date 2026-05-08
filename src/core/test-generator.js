@@ -495,6 +495,9 @@ module.exports = {
     const jsFiles = writtenFiles.filter(f => f.endsWith('.js') || f.endsWith('.mjs'));
     if (jsFiles.length === 0) return;
 
+    // Pre-pass: fix corrupted require/import patterns before syntax check
+    this._fixPlaywrightRequires(outputDir, jsFiles);
+
     const broken = [];
 
     for (const relPath of jsFiles) {
@@ -657,6 +660,66 @@ module.exports = {
     }
 
     return null; // No basic fix found
+  }
+
+  /**
+   * Fix corrupted require/import lines in generated Playwright test files.
+   * AI sometimes generates garbage like:
+   *   onPostExecute({ test, expect } = require('@playwright/test'));
+   * instead of:
+   *   const { test, expect } = require('@playwright/test');
+   *
+   * These are syntactically valid JS (function call + destructuring) so vm.Script won't catch them,
+   * but they fail at runtime with ReferenceError.
+   */
+  _fixPlaywrightRequires(outputDir, jsFiles) {
+    // Pattern: any identifier (not const/let/var) followed by destructuring require of @playwright/test
+    // Examples:
+    //   onPostExecute({ test, expect } = require('@playwright/test'));
+    //   someGarbage({test,expect}=require("@playwright/test"));
+    const corruptedRequire = /^[^/\s]*?\b(?!const\b|let\b|var\b)([a-zA-Z_$][\w$]*)\s*\(\s*\{([^}]+)\}\s*=\s*require\s*\(\s*['"]@playwright\/test['"]\s*\)\s*\)\s*;?\s*$/;
+
+    // Also catch: missing const/let/var entirely:
+    //   { test, expect } = require('@playwright/test');
+    const missingDecl = /^\s*\{([^}]+)\}\s*=\s*require\s*\(\s*['"]@playwright\/test['"]\s*\)\s*;?\s*$/;
+
+    for (const relPath of jsFiles) {
+      const fullPath = path.join(outputDir, relPath);
+      if (!fs.existsSync(fullPath)) continue;
+
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      const lines = content.split('\n');
+      let modified = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        // Check for corrupted pattern: someFunc({ test, expect } = require(...));
+        let match = trimmed.match(corruptedRequire);
+        if (match) {
+          const vars = match[2].trim();
+          lines[i] = `const { ${vars} } = require('@playwright/test');`;
+          logger.warn(`   Fixed corrupted require in ${relPath} line ${i + 1}: "${match[1]}(...)" → "const ..."`);
+          modified = true;
+          continue;
+        }
+
+        // Check for missing declaration keyword
+        match = trimmed.match(missingDecl);
+        if (match) {
+          const vars = match[1].trim();
+          lines[i] = `const { ${vars} } = require('@playwright/test');`;
+          logger.warn(`   Fixed missing declaration in ${relPath} line ${i + 1}`);
+          modified = true;
+          continue;
+        }
+      }
+
+      if (modified) {
+        fs.writeFileSync(fullPath, lines.join('\n'), 'utf-8');
+      }
+    }
   }
 }
 
