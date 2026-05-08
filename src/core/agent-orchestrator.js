@@ -558,17 +558,25 @@ class AgentOrchestrator {
 
         // 9d. Root-cause analysis
         updateStatus('fixing');
-        const failureAnalysis = await this.issueFixer.analyzeFailures(
-          lastTestResult, codeAnalysis, workDir
-        );
+        let failureAnalysis, fixResult;
+        try {
+          failureAnalysis = await this.issueFixer.analyzeFailures(
+            lastTestResult, codeAnalysis, workDir
+          );
 
-        // 9e. Generate and apply fixes
-        const fixResult = await this.issueFixer.generateAndApplyFixes(
-          failureAnalysis, workDir, {
-            appUrl,
-            previousFailCount: lastTestResult.failed
-          }
-        );
+          // 9e. Generate and apply fixes
+          fixResult = await this.issueFixer.generateAndApplyFixes(
+            failureAnalysis, workDir, {
+              appUrl,
+              previousFailCount: lastTestResult.failed
+            }
+          );
+        } catch (fixError) {
+          logger.warn(`Fix iteration failed: ${fixError.message}`);
+          logger.info('Continuing to next iteration without fixes...');
+          this.iterationHistory.push(iterationRecord);
+          continue;
+        }
 
         iterationRecord.appFixes = fixResult.applied.filter(f => !f.file.startsWith('generated-tests/')).length;
         iterationRecord.testFixes = fixResult.applied.filter(f => f.file.startsWith('generated-tests/')).length;

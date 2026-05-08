@@ -137,7 +137,7 @@ Return ONLY valid JSON, no markdown formatting.`
   }
 
   /**
-   * Parse AI response as JSON, handling common issues.
+   * Parse AI response as JSON, handling common issues including truncated responses.
    */
   _parseJsonResponse(text) {
     // Strip markdown code fences if present
@@ -155,10 +155,67 @@ Return ONLY valid JSON, no markdown formatting.`
         try {
           return JSON.parse(jsonMatch[0]);
         } catch {
-          throw new Error(`Failed to parse AI response as JSON: ${e.message}`);
+          // Fall through to truncated repair
         }
       }
-      throw new Error(`AI response is not valid JSON: ${e.message}`);
+
+      // Attempt to repair truncated JSON (common when max_tokens is hit)
+      const repaired = this._repairTruncatedJson(cleaned);
+      if (repaired !== null) {
+        return repaired;
+      }
+
+      throw new Error(`Failed to parse AI response as JSON: ${e.message}`);
+    }
+  }
+
+  /**
+   * Attempt to repair truncated JSON by closing open strings, arrays, and objects.
+   * Returns parsed object or null if repair fails.
+   */
+  _repairTruncatedJson(text) {
+    try {
+      let repaired = text;
+
+      // If truncated mid-string, close the string
+      let inString = false;
+      let escaped = false;
+      for (let i = 0; i < repaired.length; i++) {
+        const ch = repaired[i];
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') { inString = !inString; }
+      }
+      if (inString) {
+        repaired += '"';
+      }
+
+      // Remove trailing comma if present (invalid before closing bracket)
+      repaired = repaired.replace(/,\s*$/, '');
+
+      // Count open braces/brackets and close them
+      const opens = [];
+      inString = false;
+      escaped = false;
+      for (let i = 0; i < repaired.length; i++) {
+        const ch = repaired[i];
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === '{') opens.push('}');
+        else if (ch === '[') opens.push(']');
+        else if (ch === '}' || ch === ']') opens.pop();
+      }
+
+      // Close all unclosed brackets/braces
+      while (opens.length > 0) {
+        repaired += opens.pop();
+      }
+
+      return JSON.parse(repaired);
+    } catch {
+      return null;
     }
   }
 }
