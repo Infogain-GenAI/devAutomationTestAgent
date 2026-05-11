@@ -82,6 +82,7 @@ IMPORTANT: Generate tests ONLY for the files listed above. Do NOT create tests f
 - Use const request = require('supertest') for API/HTTP testing
 - Use const app = require('relative/path/to/app') to import the Express app
 - File names MUST end with .test.js (NOT .spec.js — those are for Playwright)
+- DO NOT require or import 'jest', 'mocha', or 'jasmine' — they are test runners and provide globals automatically
 `;
       }
       testInstructions += `Return JSON with:

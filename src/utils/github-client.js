@@ -32,16 +32,31 @@ function createClient(config) {
  */
 async function createPullRequest(octokit, { owner, repo, title, body, head, base }) {
   logger.info(`Creating PR: ${head} → ${base} in ${owner}/${repo}`);
-  const { data } = await octokit.pulls.create({
-    owner,
-    repo,
-    title,
-    body,
-    head,
-    base
-  });
-  logger.info(`PR created: ${data.html_url}`);
-  return data;
+  try {
+    const { data } = await octokit.pulls.create({
+      owner,
+      repo,
+      title,
+      body,
+      head,
+      base
+    });
+    logger.info(`PR created: ${data.html_url}`);
+    return data;
+  } catch (err) {
+    if (err.status === 404) {
+      logger.error(`PR creation failed with 404. This usually means:`);
+      logger.error(`  1. The token does not have write access to ${owner}/${repo}`);
+      logger.error(`  2. The repository ${owner}/${repo} does not exist or is misspelled`);
+      logger.error(`  3. The head branch "${head}" was not pushed to origin`);
+      logger.error(`  Verify GITHUB_TOKEN or MY_GITHUB_PAT has "pull-requests: write" permission`);
+    } else if (err.status === 422) {
+      logger.error(`PR creation failed with 422. This usually means:`);
+      logger.error(`  1. A PR from "${head}" to "${base}" already exists`);
+      logger.error(`  2. The head branch "${head}" has no commits ahead of "${base}"`);
+    }
+    throw err;
+  }
 }
 
 /**

@@ -81,6 +81,11 @@ class ReportGenerator {
       sections.push(this._buildTestResultsSection(runData.testResults));
     }
 
+    // Live API Endpoint Validation
+    if (runData.liveValidation && runData.liveValidation.totalTested > 0) {
+      sections.push(this._buildLiveValidationSection(runData.liveValidation));
+    }
+
     // Fixes Applied
     if (runData.fixesApplied) {
       sections.push(this._buildFixesSection(runData.fixesApplied));
@@ -351,6 +356,77 @@ ${(fixesApplied.applied || []).slice(0, 20).map((fix, idx) =>
 ${fixesApplied.reverted?.length > 0 ? `### Reverted Fixes\n${fixesApplied.reverted.map(fix => 
   `- ${fix.file}: ${fix.reason}`
 ).join('\n')}` : ''}`;
+  }
+
+  /**
+   * Build live API endpoint validation section
+   */
+  _buildLiveValidationSection(liveValidation) {
+    const successRate = liveValidation.totalTested > 0
+      ? ((liveValidation.accessible / liveValidation.totalTested) * 100).toFixed(1)
+      : 0;
+
+    let section = `## \ud83d\udce1 Live API Endpoint Validation\n\n`;
+    section += `### Summary\n`;
+    section += `- Endpoints Tested: **${liveValidation.totalTested}**\n`;
+    section += `- Accessible: **${liveValidation.accessible}** \u2705\n`;
+    section += `- Failed: **${liveValidation.failed}** ${liveValidation.failed > 0 ? '\u274c' : ''}\n`;
+    section += `- Accessibility Rate: **${successRate}%**\n\n`;
+
+    if (liveValidation.endpoints && liveValidation.endpoints.length > 0) {
+      section += `### Endpoint Results\n\n`;
+      section += `| Method | Path | Status | Response Time | Content Type | Result |\n`;
+      section += `|--------|------|--------|---------------|--------------|--------|\n`;
+
+      for (const ep of liveValidation.endpoints) {
+        if (ep.accessible) {
+          const icon = ep.statusCode < 400 ? '\u2705' : '\u26a0\ufe0f';
+          const ct = (ep.contentType || 'unknown').split(';')[0].trim();
+          section += `| ${ep.method} | \`${ep.path}\` | ${ep.statusCode} ${ep.statusMessage || ''} | ${ep.responseTime}ms | ${ct} | ${icon} |\n`;
+        } else {
+          section += `| ${ep.method} | \`${ep.path}\` | \u2014 | \u2014 | \u2014 | \u274c ${(ep.error || '').slice(0, 50)} |\n`;
+        }
+      }
+      section += '\n';
+
+      // Working endpoints detail
+      const working = liveValidation.endpoints.filter(e => e.accessible && e.statusCode < 400);
+      if (working.length > 0) {
+        section += `### Working Endpoints (${working.length})\n\n`;
+        for (const ep of working.slice(0, 15)) {
+          section += `- **${ep.method} \`${ep.path}\`** \u2192 ${ep.statusCode} (${ep.responseTime}ms)\n`;
+          if (ep.responseBody && typeof ep.responseBody === 'object') {
+            const preview = JSON.stringify(ep.responseBody).slice(0, 200);
+            section += `  - Response preview: \`${preview}${preview.length >= 200 ? '...' : ''}\`\n`;
+          }
+        }
+        section += '\n';
+      }
+
+      // Mutation endpoints with sample data
+      const mutations = liveValidation.endpoints.filter(e => e.bodyDataSent);
+      if (mutations.length > 0) {
+        section += `### Sample Data Sent\n\n`;
+        for (const ep of mutations.slice(0, 10)) {
+          section += `**${ep.method} \`${ep.path}\`** \u2192 ${ep.statusCode || 'N/A'}\n\n`;
+          section += `Request body:\n\`\`\`json\n${JSON.stringify(ep.bodyDataSent, null, 2)}\n\`\`\`\n\n`;
+          if (ep.responseBody && typeof ep.responseBody === 'object') {
+            section += `Response:\n\`\`\`json\n${JSON.stringify(ep.responseBody, null, 2)}\n\`\`\`\n\n`;
+          }
+        }
+      }
+
+      // Failed endpoints
+      if (liveValidation.errors && liveValidation.errors.length > 0) {
+        section += `### Unreachable Endpoints\n\n`;
+        for (const err of liveValidation.errors) {
+          section += `- \u274c **${err.endpoint}**: ${err.error}\n`;
+        }
+        section += '\n';
+      }
+    }
+
+    return section;
   }
 
   /**

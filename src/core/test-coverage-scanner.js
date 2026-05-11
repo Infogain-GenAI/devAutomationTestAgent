@@ -174,6 +174,17 @@ class TestCoverageScanner {
           targets: missing,
           existing: existing.length
         };
+      } else if (testType === 'unit' && existing.length <= 2) {
+        // Very few existing unit tests and no gaps found — likely the
+        // scanner couldn't detect all source files.  Generate additional
+        // tests anyway so we don't silently skip a near-empty test suite.
+        typesToGenerate[testType] = {
+          generate: true,
+          reason: `Only ${existing.length} existing test(s) — generating additional coverage`,
+          scope: 'full',
+          targets: [],
+          existing: existing.length
+        };
       } else {
         // Full coverage exists - skip generation
         typesToGenerate[testType] = {
@@ -313,24 +324,51 @@ class TestCoverageScanner {
   _extractBackendFiles(structure) {
     if (!structure || !structure.files) return [];
 
+    // Standard backend directory patterns
+    const backendDirPatterns = [
+      '/api/', '/routes/', '/controllers/', '/services/',
+      '/models/', '/handlers/', '/middleware/', '/helpers/',
+      '/utils/', '/lib/', '/core/', '/modules/'
+    ];
+
+    // Root-level entry-point patterns (flat-structure apps)
+    const rootEntryPatterns = [
+      'index.js', 'server.js', 'app.js', 'main.js',
+      'index.ts', 'server.ts', 'app.ts', 'main.ts'
+    ];
+
+    // Directories to exclude from source file scanning
+    const excludeDirs = new Set([
+      'node_modules', '.git', 'dist', 'build', 'coverage', 'public', 'static',
+      'assets', 'views', 'templates', '__tests__', 'tests', 'test', 'spec',
+      'generated-tests', '.next', '.nuxt', 'scripts', 'config', 'docs'
+    ]);
+
     return structure.files
       .filter(file => {
-        const isBackend = 
-          file.path.includes('/api/') ||
-          file.path.includes('/routes/') ||
-          file.path.includes('/controllers/') ||
-          file.path.includes('/services/') ||
-          file.path.includes('/models/') ||
-          file.path.includes('/handlers/') ||
-          file.path.includes('/middleware/');
-        
         const isSourceFile = 
           file.path.endsWith('.js') ||
           file.path.endsWith('.ts') ||
           file.path.endsWith('.py') ||
           file.path.endsWith('.go');
 
-        return isBackend && isSourceFile && !this._isTestFile(file.path);
+        if (!isSourceFile || this._isTestFile(file.path)) return false;
+
+        // Check if file is in a standard backend directory
+        const inBackendDir = backendDirPatterns.some(p => file.path.includes(p));
+        if (inBackendDir) return true;
+
+        // Check if file is a root-level entry point
+        const basename = path.basename(file.path);
+        const dirDepth = file.path.split('/').filter(Boolean).length;
+        if (dirDepth <= 2 && rootEntryPatterns.includes(basename)) return true;
+
+        // Check if file is a root-level or src-level source file (not in excluded dirs)
+        const pathParts = file.path.split('/').filter(Boolean);
+        const isInExcludedDir = pathParts.some(part => excludeDirs.has(part));
+        if (!isInExcludedDir && dirDepth <= 3) return true;
+
+        return false;
       })
       .map(file => ({
         path: file.path,

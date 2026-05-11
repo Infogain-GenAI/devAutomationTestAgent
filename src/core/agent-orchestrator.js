@@ -193,7 +193,7 @@ class AgentOrchestrator {
           const changedFiles = await this.repoManager.getChangedFiles();
           if (changedFiles.length > 0) {
             await this.repoManager.commitChanges(
-              'fix: IGNIS backend validation fixes', 
+              'fix: IGNIS code_fixes — backend validation fixes', 
               changedFiles
             );
           }
@@ -440,6 +440,24 @@ class AgentOrchestrator {
             }
           }
           
+          // Commit unit test fixes (both app fixes and test file changes)
+          const unitChangedFiles = await this.repoManager.getChangedFiles();
+          if (unitChangedFiles.length > 0) {
+            const unitAppFiles = unitChangedFiles.filter(f => !f.startsWith('generated-tests/'));
+            const unitTestFiles = unitChangedFiles.filter(f => f.startsWith('generated-tests/'));
+
+            if (unitAppFiles.length > 0) {
+              await this.repoManager.commitChanges(
+                'fix: IGNIS unit_tests — app code fixes', unitAppFiles
+              );
+            }
+            if (unitTestFiles.length > 0) {
+              await this.repoManager.commitChanges(
+                'test: IGNIS unit_tests — test code fixes', unitTestFiles
+              );
+            }
+          }
+          
           // Write results to log
           this.unitTestRunner.writeResultsToLog(unitTestResults, workDir);
           
@@ -486,7 +504,36 @@ class AgentOrchestrator {
       }
 
       const appUrl = appResult.url || this.config.app.url || null;
-      
+
+      // ── Step 8a: Live endpoint smoke test ───────────────────
+      let liveValidation = null;
+      if (appUrl && (appResult.started || appResult.url)) {
+        try {
+          updateStatus('validating-endpoints-live');
+          logger.info('Running live endpoint smoke tests...');
+          liveValidation = await this.backendValidator.validateEndpointsLive(
+            appUrl, workDir, codeAnalysis.structure, codeAnalysis
+          );
+          
+          if (liveValidation.totalTested > 0) {
+            logger.info(`\n📡 LIVE ENDPOINT VALIDATION:`);
+            logger.info(`   Tested: ${liveValidation.totalTested}`);
+            logger.info(`   Accessible: ${liveValidation.accessible} ✅`);
+            logger.info(`   Failed: ${liveValidation.failed} ${liveValidation.failed > 0 ? '❌' : ''}`);
+            
+            if (liveValidation.errors.length > 0) {
+              logger.warn(`   Unreachable endpoints:`);
+              for (const err of liveValidation.errors) {
+                logger.warn(`      - ${err.endpoint}: ${err.error}`);
+              }
+            }
+            logger.info('');
+          }
+        } catch (err) {
+          logger.warn(`Live endpoint validation failed: ${err.message}`);
+        }
+      }
+
       // ── Step 9: Run tests iteratively ───────────────────────
       logger.info(`Starting test execution phase (${this.config.agent.maxIterations} max iterations)...`);
       updateStatus('testing');
@@ -616,13 +663,30 @@ class AgentOrchestrator {
 
           if (appFiles.length > 0) {
             await this.repoManager.commitChanges(
-              `fix: IGNIS iteration ${iteration} — app code fixes`, appFiles
+              `fix: IGNIS code_fixes — iteration ${iteration} app fixes`, appFiles
             );
           }
           if (testFiles.length > 0) {
-            await this.repoManager.commitChanges(
-              `test: IGNIS iteration ${iteration} — test code fixes`, testFiles
-            );
+            // Categorize test files by type
+            const e2eFiles = testFiles.filter(f => f.includes('/e2e/') || f.includes('e2e'));
+            const apiFiles = testFiles.filter(f => f.includes('/api/') || f.includes('api'));
+            const otherTestFiles = testFiles.filter(f => !e2eFiles.includes(f) && !apiFiles.includes(f));
+
+            if (e2eFiles.length > 0) {
+              await this.repoManager.commitChanges(
+                `test: IGNIS e2e_tests — iteration ${iteration} test fixes`, e2eFiles
+              );
+            }
+            if (apiFiles.length > 0) {
+              await this.repoManager.commitChanges(
+                `test: IGNIS api_tests — iteration ${iteration} test fixes`, apiFiles
+              );
+            }
+            if (otherTestFiles.length > 0) {
+              await this.repoManager.commitChanges(
+                `test: IGNIS test_fixes — iteration ${iteration} test fixes`, otherTestFiles
+              );
+            }
           }
         }
       }
@@ -652,6 +716,17 @@ class AgentOrchestrator {
           backendValidation,
           bestPracticesValidation,
           testResults: lastTestResult,
+          unitTestResults: unitTestResults ? {
+            framework: unitTestResults.framework,
+            total: unitTestResults.total,
+            passed: unitTestResults.passed,
+            failed: unitTestResults.failed,
+            skipped: unitTestResults.skipped,
+            duration: unitTestResults.duration,
+            coverage: unitTestResults.coverage,
+            failures: unitTestResults.failures || []
+          } : null,
+          liveValidation: liveValidation || null,
           fixesApplied: {
             applied: [
               ...this.appFixFiles.map(f => ({ file: f, type: 'app' })),
@@ -672,7 +747,7 @@ class AgentOrchestrator {
         const reportFiles = await this.repoManager.getChangedFiles();
         if (reportFiles.length > 0) {
           await this.repoManager.commitChanges(
-            'docs: IGNIS comprehensive analysis report',
+            'docs: IGNIS report — comprehensive analysis report',
             reportFiles
           );
         }
@@ -680,7 +755,7 @@ class AgentOrchestrator {
       
       const prResults = await this._createPullRequests(
         fixBranch, branch, lastTestResult, allPassed, appResult, envMap, sources,
-        backendValidation, bestPracticesValidation, reportInfo
+        backendValidation, bestPracticesValidation, reportInfo, unitTestResults, liveValidation
       );
 
       // ── Step 12: Build summary ──────────────────────────────
@@ -717,6 +792,11 @@ class AgentOrchestrator {
         iterationHistory: this.iterationHistory,
         appStarted: appResult.started,
         appStartMethod: appResult.method || null,
+        liveValidation: liveValidation ? {
+          totalTested: liveValidation.totalTested,
+          accessible: liveValidation.accessible,
+          failed: liveValidation.failed
+        } : null,
         prUrl: prResults.fixPrUrl || null,
         reportPrUrl: prResults.reportPrUrl || null,
         duration: Date.now() - this.startTime,
@@ -751,6 +831,38 @@ class AgentOrchestrator {
         }
       }
       
+      if (liveValidation && liveValidation.totalTested > 0) {
+        logger.info('\n📡 LIVE ENDPOINT VALIDATION:');
+        logger.info(`   Endpoints Tested: ${liveValidation.totalTested}`);
+        logger.info(`   Accessible: ${liveValidation.accessible} ✅`);
+        logger.info(`   Failed: ${liveValidation.failed} ${liveValidation.failed > 0 ? '❌' : ''}`);
+        
+        if (liveValidation.endpoints) {
+          const successEndpoints = liveValidation.endpoints.filter(e => e.accessible && e.statusCode < 400);
+          const warnEndpoints = liveValidation.endpoints.filter(e => e.accessible && e.statusCode >= 400);
+          const failedEndpoints = liveValidation.endpoints.filter(e => !e.accessible);
+          
+          if (successEndpoints.length > 0) {
+            logger.info('   Working endpoints:');
+            successEndpoints.slice(0, 10).forEach(ep => {
+              logger.info(`      ✅ ${ep.method} ${ep.path} → ${ep.statusCode} (${ep.responseTime}ms)`);
+            });
+          }
+          if (warnEndpoints.length > 0) {
+            logger.info('   Endpoints returning errors:');
+            warnEndpoints.slice(0, 10).forEach(ep => {
+              logger.info(`      ⚠️  ${ep.method} ${ep.path} → ${ep.statusCode} (${ep.responseTime}ms)`);
+            });
+          }
+          if (failedEndpoints.length > 0) {
+            logger.info('   Unreachable endpoints:');
+            failedEndpoints.slice(0, 5).forEach(ep => {
+              logger.info(`      ❌ ${ep.method} ${ep.path} → ${ep.error}`);
+            });
+          }
+        }
+      }
+
       // Test Coverage
       logger.info('\n✅ TEST EXECUTION SUMMARY:');
       if (unitTestResults) {
@@ -868,22 +980,55 @@ class AgentOrchestrator {
    * Create PR(s) with fixes and/or report.
    */
   async _createPullRequests(fixBranch, baseBranch, testResult, allPassed, appResult, envMap, envSources, 
-                             backendValidation, bestPracticesValidation, reportInfo) {
+                             backendValidation, bestPracticesValidation, reportInfo, unitTestResults, liveValidation) {
     const results = { fixPrUrl: null, reportPrUrl: null };
 
     try {
-      // Commit generated tests if not already committed
+      // Commit any remaining generated tests with typed naming
       const changedFiles = await this.repoManager.getChangedFiles();
       if (changedFiles.length > 0) {
-        await this.repoManager.commitChanges('test: IGNIS generated test suite', changedFiles);
+        // Separate by category
+        const testFiles = changedFiles.filter(f => f.startsWith('generated-tests/'));
+        const otherFiles = changedFiles.filter(f => !f.startsWith('generated-tests/'));
+
+        if (testFiles.length > 0) {
+          // Sub-categorize generated test files
+          const e2eFiles = testFiles.filter(f => f.includes('/e2e/') || f.includes('e2e'));
+          const apiFiles = testFiles.filter(f => f.includes('/api/') || f.includes('api'));
+          const unitFiles = testFiles.filter(f => f.includes('/unit/') || f.includes('.test.'));
+          const remainingTests = testFiles.filter(f => !e2eFiles.includes(f) && !apiFiles.includes(f) && !unitFiles.includes(f));
+
+          if (e2eFiles.length > 0) {
+            await this.repoManager.commitChanges('test: IGNIS e2e_tests — generated test suite', e2eFiles);
+          }
+          if (apiFiles.length > 0) {
+            await this.repoManager.commitChanges('test: IGNIS api_tests — generated test suite', apiFiles);
+          }
+          if (unitFiles.length > 0) {
+            await this.repoManager.commitChanges('test: IGNIS unit_tests — generated test suite', unitFiles);
+          }
+          if (remainingTests.length > 0) {
+            await this.repoManager.commitChanges('test: IGNIS generated_tests — test suite', remainingTests);
+          }
+        }
+
+        if (otherFiles.length > 0) {
+          await this.repoManager.commitChanges('chore: IGNIS — remaining changes', otherFiles);
+        }
       }
 
-      // Push the branch
-      await this.repoManager.pushBranch(fixBranch);
+      // Push the branch — must succeed before creating PR
+      try {
+        await this.repoManager.pushBranch(fixBranch);
+      } catch (pushErr) {
+        logger.error(`Failed to push branch ${fixBranch}: ${pushErr.message}`);
+        logger.error('PR creation skipped — branch could not be pushed to remote');
+        return results;
+      }
 
       // Build PR body
       const prBody = this._buildPrBody(testResult, allPassed, appResult, envMap, envSources, 
-                                        backendValidation, bestPracticesValidation, reportInfo);
+                                        backendValidation, bestPracticesValidation, reportInfo, unitTestResults, liveValidation);
 
       // Create the PR
       const pr = await this.repoManager.createPR({
@@ -908,7 +1053,7 @@ class AgentOrchestrator {
   /**
    * Build the PR body with full report.
    */
-  _buildPrBody(testResult, allPassed, appResult, envMap, envSources, backendValidation, bestPracticesValidation, reportInfo) {
+  _buildPrBody(testResult, allPassed, appResult, envMap, envSources, backendValidation, bestPracticesValidation, reportInfo, unitTestResults, liveValidation) {
     const envProvidedCount = envSources ? Object.values(envSources).filter(s => s === 'provided').length : 0;
     const envMockedCount = envSources ? Object.values(envSources).filter(s => s === 'auto-generated').length : 0;
 
@@ -948,9 +1093,69 @@ class AgentOrchestrator {
       body += `- **Location**: \`${this.config.agent.reportOutputDir}/\`\n\n`;
     }
 
+    // Live API Endpoint Validation Section
+    if (liveValidation && liveValidation.totalTested > 0) {
+      body += `### 📡 Live API Endpoint Validation\n\n`;
+      body += `| Metric | Count |\n|--------|-------|\n`;
+      body += `| Endpoints Tested | ${liveValidation.totalTested} |\n`;
+      body += `| Accessible | ${liveValidation.accessible} |\n`;
+      body += `| Failed | ${liveValidation.failed} |\n\n`;
+
+      if (liveValidation.endpoints && liveValidation.endpoints.length > 0) {
+        body += `| Method | Path | Status | Response Time | Result |\n`;
+        body += `|--------|------|--------|---------------|--------|\n`;
+        for (const ep of liveValidation.endpoints.slice(0, 30)) {
+          if (ep.accessible) {
+            const icon = ep.statusCode < 400 ? '✅' : '⚠️';
+            body += `| ${ep.method} | \`${ep.path}\` | ${ep.statusCode} | ${ep.responseTime}ms | ${icon} |\n`;
+          } else {
+            body += `| ${ep.method} | \`${ep.path}\` | — | — | ❌ ${(ep.error || '').slice(0, 60)} |\n`;
+          }
+        }
+        if (liveValidation.endpoints.length > 30) {
+          body += `| ... | *${liveValidation.endpoints.length - 30} more* | | | |\n`;
+        }
+        body += '\n';
+      }
+
+      // Show sample data sent for POST/PUT/PATCH endpoints
+      const mutationEndpoints = (liveValidation.endpoints || []).filter(ep => ep.bodyDataSent);
+      if (mutationEndpoints.length > 0) {
+        body += `<details>\n<summary>Sample Data Sent (${mutationEndpoints.length} endpoints)</summary>\n\n`;
+        for (const ep of mutationEndpoints.slice(0, 10)) {
+          body += `**${ep.method} \`${ep.path}\`** → ${ep.statusCode || 'N/A'}\n`;
+          body += `\`\`\`json\n${JSON.stringify(ep.bodyDataSent, null, 2)}\n\`\`\`\n\n`;
+        }
+        body += `</details>\n\n`;
+      }
+    }
+
     body += `### Environment\n`;
     body += `- **App Startup**: ${appResult.started ? `Auto-started (${appResult.method})` : 'Not started'}\n`;
     body += `- **Environment Variables**: ${envProvidedCount} provided, ${envMockedCount} auto-generated\n\n`;
+
+    if (unitTestResults && unitTestResults.total > 0) {
+      body += `### Unit Test Results (${unitTestResults.framework})\n\n`;
+      body += `| Metric | Count |\n|--------|-------|\n`;
+      body += `| Passed | ${unitTestResults.passed} |\n`;
+      body += `| Failed | ${unitTestResults.failed} |\n`;
+      body += `| Skipped | ${unitTestResults.skipped || 0} |\n`;
+      body += `| Total | ${unitTestResults.total} |\n`;
+      body += `| Duration | ${((unitTestResults.duration || 0) / 1000).toFixed(2)}s |\n\n`;
+
+      if (unitTestResults.failures && unitTestResults.failures.length > 0) {
+        body += `#### Unit Test Failures\n\n`;
+        body += `| Test | Error |\n|------|-------|\n`;
+        for (const f of unitTestResults.failures.slice(0, 15)) {
+          const error = (f.error || '').replace(/\|/g, '\\|').replace(/\n/g, ' ').slice(0, 120);
+          body += `| \`${f.testName || 'unknown'}\` | ${error} |\n`;
+        }
+        if (unitTestResults.failures.length > 15) {
+          body += `| ... | *${unitTestResults.failures.length - 15} more failures* |\n`;
+        }
+        body += '\n';
+      }
+    }
 
     if (testResult) {
       body += `### Test Results (Final Iteration)\n\n`;
@@ -1012,7 +1217,9 @@ class AgentOrchestrator {
       {},
       null,
       null,
-      null
+      null,
+      this.summary.unitTestResults || null,
+      this.summary.liveValidation || null
     );
   }
 

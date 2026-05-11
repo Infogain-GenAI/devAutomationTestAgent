@@ -497,6 +497,7 @@ module.exports = {
 
     // Pre-pass: fix corrupted require/import patterns before syntax check
     this._fixPlaywrightRequires(outputDir, jsFiles);
+    this._fixCommonTestIssues(outputDir, jsFiles);
 
     const broken = [];
 
@@ -713,6 +714,89 @@ module.exports = {
           logger.warn(`   Fixed missing declaration in ${relPath} line ${i + 1}`);
           modified = true;
           continue;
+        }
+      }
+
+      if (modified) {
+        fs.writeFileSync(fullPath, lines.join('\n'), 'utf-8');
+      }
+    }
+  }
+
+  /**
+   * Fix common AI-generated test issues:
+   * 1. Remove bogus `require('jest')` / `require('mocha')` lines (Jest/Mocha are test runners, not importable)
+   * 2. Fix relative paths for unit test files that reference the app's source
+   */
+  _fixCommonTestIssues(outputDir, jsFiles) {
+    // Patterns for bogus test framework imports that should be removed
+    const bogusRequires = /^\s*(?:const|let|var)\s+\w+\s*=\s*require\s*\(\s*['"](jest|mocha|jasmine|chai\/register)['"]\s*\)\s*;?\s*$/;
+    const bogusImports = /^\s*import\s+.*\s+from\s+['"](jest|mocha|jasmine)['"]\s*;?\s*$/;
+
+    for (const relPath of jsFiles) {
+      const fullPath = path.join(outputDir, relPath);
+      if (!fs.existsSync(fullPath)) continue;
+
+      // Only fix .test.js files (unit tests), not .spec.js (Playwright)
+      if (!relPath.endsWith('.test.js') && !relPath.endsWith('.test.ts')) continue;
+
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      const lines = content.split('\n');
+      let modified = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        // Remove bogus require('jest') / require('mocha') etc.
+        if (bogusRequires.test(trimmed) || bogusImports.test(trimmed)) {
+          const match = trimmed.match(/['"](jest|mocha|jasmine|chai\/register)['"]/);
+          logger.warn(`   Removed bogus require('${match ? match[1] : '?'}') in ${relPath} line ${i + 1}`);
+          lines[i] = `// ${trimmed} // Removed: test runner is not importable`;
+          modified = true;
+          continue;
+        }
+      }
+
+      // Fix relative paths to project source files.
+      // Generated test files are at generated-tests/tests/unit/foo.test.js
+      // but AI generates paths as if the file is at tests/unit/foo.test.js.
+      // Every relative require that goes up to the project root needs an extra '../'.
+      // E.g. require('../../index') → require('../../../index')
+      const depthInOutputDir = relPath.split(/[/\\]/).length; // e.g. tests/unit/foo.test.js = 3
+
+      // Only fix if there's actually a depth difference (file is under generated-tests/)
+      if (depthInOutputDir >= 2) {
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Match require('../../something') or require("../../something")
+          const requireMatch = line.match(/require\s*\(\s*(['"])(\.\.\/(?:\.\.\/)*[^'"]+)\1\s*\)/);
+          if (requireMatch) {
+            const quoteMark = requireMatch[1];
+            const originalPath = requireMatch[2];
+            // Count how many '../' the path has
+            const dotDotCount = (originalPath.match(/\.\.\//g) || []).length;
+            // If the path goes up exactly to where AI thinks the root is, add one more '../'
+            if (dotDotCount === depthInOutputDir - 1) {
+              const fixedPath = '../' + originalPath;
+              // Verify the target exists from the actual file location
+              const actualFilePath = path.join(outputDir, relPath);
+              const resolvedTarget = path.resolve(path.dirname(actualFilePath), fixedPath);
+              // Check if the fixed path points to an existing file (with or without extension)
+              const targetExists = fs.existsSync(resolvedTarget) || 
+                                   fs.existsSync(resolvedTarget + '.js') || 
+                                   fs.existsSync(resolvedTarget + '.ts') ||
+                                   fs.existsSync(path.join(resolvedTarget, 'index.js'));
+              if (targetExists) {
+                lines[i] = line.replace(
+                  `require(${quoteMark}${originalPath}${quoteMark})`,
+                  `require(${quoteMark}${fixedPath}${quoteMark})`
+                );
+                logger.info(`   Fixed relative path in ${relPath} line ${i + 1}: '${originalPath}' → '${fixedPath}'`);
+                modified = true;
+              }
+            }
+          }
         }
       }
 

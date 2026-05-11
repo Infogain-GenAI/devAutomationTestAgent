@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const https = require('https');
 const logger = require('../utils/logger');
 
 class BackendValidator {
@@ -420,6 +422,272 @@ Provide:
 1. Issues with severity
 2. Root cause analysis
 3. Recommended fixes`;
+  }
+
+  /**
+   * Validate endpoints by sending actual HTTP requests with sample data.
+   * Runs after the app is started to verify endpoints are accessible and respond correctly.
+   * @param {string} appUrl - Base URL of the running application (e.g. http://localhost:3000)
+   * @param {string} workDir - Working directory for file access
+   * @param {object} structureResult - Code analysis structure result
+   * @param {object} codeAnalysis - Full code analysis result (contains endpoints, routes, apiContracts)
+   * @returns {object} Live validation results
+   */
+  async validateEndpointsLive(appUrl, workDir, structureResult, codeAnalysis) {
+    if (!appUrl) {
+      logger.warn('No app URL provided — skipping live endpoint validation');
+      return { endpoints: [], totalTested: 0, accessible: 0, failed: 0, errors: [] };
+    }
+
+    logger.info(`Starting live endpoint validation against ${appUrl}...`);
+
+    // Collect endpoints from multiple sources
+    const endpoints = this._collectEndpointsForLiveTest(workDir, structureResult, codeAnalysis);
+
+    if (endpoints.length === 0) {
+      logger.info('No endpoints discovered for live validation');
+      return { endpoints: [], totalTested: 0, accessible: 0, failed: 0, errors: [] };
+    }
+
+    logger.info(`Discovered ${endpoints.length} endpoint(s) for live validation`);
+
+    const results = {
+      endpoints: [],
+      totalTested: 0,
+      accessible: 0,
+      failed: 0,
+      errors: []
+    };
+
+    for (const endpoint of endpoints) {
+      const result = await this._testEndpointLive(appUrl, endpoint);
+      results.endpoints.push(result);
+      results.totalTested++;
+
+      if (result.accessible) {
+        results.accessible++;
+        const statusIcon = result.statusCode < 400 ? '✅' : '⚠️';
+        logger.info(`   ${statusIcon} ${endpoint.method} ${endpoint.path} → ${result.statusCode} (${result.responseTime}ms)`);
+      } else {
+        results.failed++;
+        results.errors.push({ endpoint: `${endpoint.method} ${endpoint.path}`, error: result.error });
+        logger.warn(`   ❌ ${endpoint.method} ${endpoint.path} → ${result.error}`);
+      }
+    }
+
+    logger.info(`Live endpoint validation complete: ${results.accessible}/${results.totalTested} accessible, ${results.failed} failed`);
+    return results;
+  }
+
+  /**
+   * Collect endpoints for live testing from all available sources.
+   */
+  _collectEndpointsForLiveTest(workDir, structureResult, codeAnalysis) {
+    const endpointMap = new Map(); // key: "METHOD /path" → endpoint
+
+    // Source 1: Static extraction from backend files
+    const backendFiles = this._identifyBackendFiles(workDir, structureResult);
+    const staticEndpoints = this._extractEndpoints(workDir, backendFiles);
+    for (const ep of staticEndpoints) {
+      const key = `${ep.method} ${ep.path}`;
+      if (!endpointMap.has(key)) {
+        endpointMap.set(key, { method: ep.method, path: ep.path, file: ep.file, source: 'static' });
+      }
+    }
+
+    // Source 2: Code analyzer extracted endpoints
+    if (codeAnalysis?.endpoints) {
+      for (const ep of codeAnalysis.endpoints) {
+        const method = (ep.method || 'GET').toUpperCase();
+        const key = `${method} ${ep.path}`;
+        if (!endpointMap.has(key)) {
+          endpointMap.set(key, { method, path: ep.path, file: ep.file || 'unknown', source: 'analyzer' });
+        }
+      }
+    }
+
+    // Source 3: Code analyzer extracted routes (convert to GET endpoints)
+    if (codeAnalysis?.routes) {
+      for (const route of codeAnalysis.routes) {
+        // Routes are typically strings like "/api/users" or "GET /api/users"
+        let method = 'GET';
+        let routePath = route;
+        const routeMatch = route.match(/^(GET|POST|PUT|DELETE|PATCH)\s+(.+)$/i);
+        if (routeMatch) {
+          method = routeMatch[1].toUpperCase();
+          routePath = routeMatch[2];
+        }
+        const key = `${method} ${routePath}`;
+        if (!endpointMap.has(key)) {
+          endpointMap.set(key, { method, path: routePath, file: 'unknown', source: 'routes' });
+        }
+      }
+    }
+
+    // Source 4: AI-extracted API contracts from deep-dive analysis
+    if (codeAnalysis?.analysis?.apiContracts) {
+      for (const contract of codeAnalysis.analysis.apiContracts) {
+        const method = (contract.method || 'GET').toUpperCase();
+        const contractPath = contract.path || contract.endpoint;
+        if (!contractPath) continue;
+        const key = `${method} ${contractPath}`;
+        if (!endpointMap.has(key)) {
+          endpointMap.set(key, {
+            method, path: contractPath, file: contract.file || 'unknown',
+            source: 'api-contract',
+            sampleBody: contract.requestBody || contract.sampleRequest || null
+          });
+        } else if (contract.requestBody || contract.sampleRequest) {
+          // Enrich existing endpoint with sample data from contract
+          const existing = endpointMap.get(key);
+          if (!existing.sampleBody) {
+            existing.sampleBody = contract.requestBody || contract.sampleRequest;
+          }
+        }
+      }
+    }
+
+    // Add common health/status endpoints if not already present
+    const commonEndpoints = [
+      { method: 'GET', path: '/', source: 'default' },
+      { method: 'GET', path: '/health', source: 'default' },
+      { method: 'GET', path: '/api/health', source: 'default' }
+    ];
+    for (const ep of commonEndpoints) {
+      const key = `${ep.method} ${ep.path}`;
+      if (!endpointMap.has(key)) {
+        endpointMap.set(key, { ...ep, file: 'default' });
+      }
+    }
+
+    return Array.from(endpointMap.values());
+  }
+
+  /**
+   * Send an actual HTTP request to a single endpoint and return the result.
+   */
+  _testEndpointLive(appUrl, endpoint) {
+    return new Promise((resolve) => {
+      const url = new URL(endpoint.path, appUrl);
+      const transport = url.protocol === 'https:' ? https : http;
+      const startTime = Date.now();
+
+      const options = {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname + url.search,
+        method: endpoint.method,
+        timeout: 10000,
+        headers: {
+          'Accept': 'application/json, text/html, */*',
+          'User-Agent': 'IGNIS-TestAgent/2.0'
+        }
+      };
+
+      // For methods that accept a body, send sample data
+      let bodyData = null;
+      if (['POST', 'PUT', 'PATCH'].includes(endpoint.method)) {
+        if (endpoint.sampleBody && typeof endpoint.sampleBody === 'object') {
+          bodyData = JSON.stringify(endpoint.sampleBody);
+        } else if (endpoint.sampleBody && typeof endpoint.sampleBody === 'string') {
+          bodyData = endpoint.sampleBody;
+        } else {
+          // Generate minimal sample data based on path
+          bodyData = JSON.stringify(this._generateSampleBody(endpoint.path));
+        }
+        options.headers['Content-Type'] = 'application/json';
+        options.headers['Content-Length'] = Buffer.byteLength(bodyData);
+      }
+
+      const req = transport.request(options, (res) => {
+        const responseTime = Date.now() - startTime;
+        let body = '';
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          let responseBody = null;
+          try { responseBody = JSON.parse(body); } catch { responseBody = body.slice(0, 500); }
+
+          resolve({
+            method: endpoint.method,
+            path: endpoint.path,
+            file: endpoint.file,
+            accessible: true,
+            statusCode: res.statusCode,
+            statusMessage: res.statusMessage,
+            responseTime,
+            contentType: res.headers['content-type'] || 'unknown',
+            responseBody,
+            bodyDataSent: bodyData ? JSON.parse(bodyData) : null
+          });
+        });
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({
+          method: endpoint.method,
+          path: endpoint.path,
+          file: endpoint.file,
+          accessible: false,
+          error: 'Request timed out (10s)',
+          responseTime: 10000
+        });
+      });
+
+      req.on('error', (err) => {
+        resolve({
+          method: endpoint.method,
+          path: endpoint.path,
+          file: endpoint.file,
+          accessible: false,
+          error: err.message,
+          responseTime: Date.now() - startTime
+        });
+      });
+
+      if (bodyData) {
+        req.write(bodyData);
+      }
+      req.end();
+    });
+  }
+
+  /**
+   * Generate minimal sample request body based on endpoint path.
+   * Uses path segments to infer likely field names.
+   */
+  _generateSampleBody(endpointPath) {
+    const segments = endpointPath.split('/').filter(Boolean);
+    const resource = segments[segments.length - 1] || segments[segments.length - 2] || 'item';
+
+    // Common patterns
+    const singularResource = resource.endsWith('s') ? resource.slice(0, -1) : resource;
+
+    const sampleBodies = {
+      users: { name: 'Test User', email: 'test@example.com' },
+      user: { name: 'Test User', email: 'test@example.com' },
+      auth: { email: 'test@example.com', password: 'TestPass123!' },
+      login: { email: 'test@example.com', password: 'TestPass123!' },
+      register: { name: 'Test User', email: 'test@example.com', password: 'TestPass123!' },
+      signup: { name: 'Test User', email: 'test@example.com', password: 'TestPass123!' },
+      posts: { title: 'Test Post', content: 'Test content for validation' },
+      post: { title: 'Test Post', content: 'Test content for validation' },
+      comments: { text: 'Test comment', postId: 1 },
+      comment: { text: 'Test comment', postId: 1 },
+      products: { name: 'Test Product', price: 9.99, description: 'Test product' },
+      product: { name: 'Test Product', price: 9.99, description: 'Test product' },
+      orders: { productId: 1, quantity: 1 },
+      order: { productId: 1, quantity: 1 },
+      items: { name: 'Test Item', value: 'test' },
+      todos: { title: 'Test Todo', completed: false },
+      todo: { title: 'Test Todo', completed: false },
+      tasks: { title: 'Test Task', status: 'pending' },
+      task: { title: 'Test Task', status: 'pending' },
+      messages: { content: 'Test message', recipientId: 1 },
+      contacts: { name: 'Test Contact', email: 'contact@example.com' }
+    };
+
+    return sampleBodies[resource] || sampleBodies[singularResource] || { name: 'test', value: 'test' };
   }
 }
 

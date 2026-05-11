@@ -40,7 +40,12 @@ class GeminiProvider extends BaseAIProvider {
     }
     
     if (isUnitTest) {
-      instructions += `Generate ${testType} tests using Jest. Include mocks, edge cases, error handling.\n`;
+      instructions += `Generate ${testType} tests using Jest. Include mocks, edge cases, error handling.
+- MUST use CommonJS require() syntax (NOT ES module import/export)
+- DO NOT require or import 'jest', 'mocha', or 'jasmine' — they provide globals automatically
+- File names MUST end with .test.js (NOT .spec.js — those are for Playwright)
+- Use describe/it/expect syntax
+`;
     } else if (isChunked && testType === 'e2e' && analysisResult.routes) {
       instructions += `Generate Playwright E2E tests for these routes:\n`;
       analysisResult.routes.forEach((r, i) => {
@@ -58,7 +63,7 @@ class GeminiProvider extends BaseAIProvider {
       instructions += `Generate Playwright ${testType} tests based on the analysis.\n`;
     }
     
-    instructions += `\nReturn a JSON object with:\n{\n  "files": [\n    { "path": "tests/${testType}/descriptive-name.spec.js", "content": "// full test file content" }\n  ]\n}`;
+    instructions += `\nReturn a JSON object with:\n{\n  "files": [\n    { "path": "tests/${testType}/descriptive-name.${isUnitTest ? 'test' : 'spec'}.js", "content": "// full test file content" }\n  ]\n}`;
 
     const userMessage = JSON.stringify({
       testType,
