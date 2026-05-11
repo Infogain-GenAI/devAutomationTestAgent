@@ -189,10 +189,71 @@ class IssueFixer {
   async generateAndApplyFixes(failureAnalysis, workDir, config = {}) {
     logger.info('Generating fixes...');
 
-    const fixes = await this.aiProvider.generateFix(
-      failureAnalysis.analysis,
-      failureAnalysis.sourceCode
-    );
+    // Check if the analysis already contains actionable fixes (from chunked analysis)
+    let fixes = this._extractFixesFromAnalysis(failureAnalysis.analysis);
+    
+    if (fixes.length > 0) {
+      logger.info(`Found ${fixes.length} fix(es) directly from failure analysis`);
+    } else {
+      // Build a focused source code map: only include files mentioned in the analysis
+      const focusedSourceCode = {};
+      const analysisFiles = new Set();
+      
+      // Extract file references from the analysis
+      if (failureAnalysis.analysis) {
+        const analysisStr = JSON.stringify(failureAnalysis.analysis);
+        const fileRefs = analysisStr.match(/(?:tests?\/[^\s"',]+\.(?:spec|test)\.[jt]sx?|generated-tests\/[^\s"',]+\.[jt]sx?)/g);
+        if (fileRefs) fileRefs.forEach(f => analysisFiles.add(f.replace(/['"]/g, '')));
+        
+        if (failureAnalysis.analysis.failures) {
+          for (const f of failureAnalysis.analysis.failures) {
+            if (f.file) analysisFiles.add(f.file);
+          }
+        }
+      }
+      
+      if (failureAnalysis.failures) {
+        for (const f of failureAnalysis.failures) {
+          if (f.file) analysisFiles.add(f.file);
+        }
+      }
+
+      // Only include source code for files referenced in failures (cap at 15 files)
+      const relevantFiles = [...analysisFiles].slice(0, 15);
+      for (const file of relevantFiles) {
+        const sourceKey = `test:${file}`;
+        if (failureAnalysis.sourceCode[sourceKey]) {
+          const content = failureAnalysis.sourceCode[sourceKey];
+          focusedSourceCode[sourceKey] = content.length > 10000 
+            ? content.slice(0, 10000) + '\n// ... [truncated]' 
+            : content;
+        }
+      }
+
+      // Include a few app source files for context
+      const appKeys = Object.keys(failureAnalysis.sourceCode).filter(k => k.startsWith('app:')).slice(0, 5);
+      for (const key of appKeys) {
+        const content = failureAnalysis.sourceCode[key];
+        focusedSourceCode[key] = content.length > 8000 
+          ? content.slice(0, 8000) + '\n// ... [truncated]' 
+          : content;
+      }
+
+      logger.info(`Sending ${Object.keys(focusedSourceCode).length} source file(s) to fix generator`);
+
+      // If too many failures, chunk the fix generation too
+      const analysisFailures = failureAnalysis.analysis?.failures || failureAnalysis.failures || [];
+      if (analysisFailures.length > 15) {
+        logger.info(`Large failure set (${analysisFailures.length}) — generating fixes in batches`);
+        fixes = await this._generateFixesInChunks(failureAnalysis.analysis, focusedSourceCode, analysisFailures);
+      } else {
+        let rawFixes = await this.aiProvider.generateFix(
+          failureAnalysis.analysis,
+          focusedSourceCode
+        );
+        fixes = this._unwrapFixes(rawFixes);
+      }
+    }
 
     if (!Array.isArray(fixes) || fixes.length === 0) {
       logger.warn('AI returned no fixes');
@@ -300,6 +361,104 @@ class IssueFixer {
     }
     logger.info(`Reverted ${reverted} file(s) to pre-fix state`);
     return reverted;
+  }
+
+  /**
+   * Extract actionable fixes from analysis results (when analysis already contains originalCode/fixedCode).
+   */
+  _extractFixesFromAnalysis(analysis) {
+    const fixes = [];
+    if (!analysis) return fixes;
+
+    // Check if the analysis has a fixes array with complete fix objects
+    const candidates = analysis.fixes || analysis.failures || [];
+    for (const item of candidates) {
+      if (item && item.file && item.originalCode && item.fixedCode) {
+        fixes.push({
+          file: item.file,
+          originalCode: item.originalCode,
+          fixedCode: item.fixedCode,
+          explanation: item.explanation || item.suggestedFix || item.rootCause || 'AI-suggested fix'
+        });
+      }
+    }
+
+    return fixes;
+  }
+
+  /**
+   * Unwrap fix response from AI — handles both array and wrapped object formats.
+   */
+  _unwrapFixes(rawFixes) {
+    if (Array.isArray(rawFixes)) return rawFixes;
+    if (!rawFixes || typeof rawFixes !== 'object') return [];
+
+    // Try common wrapper keys
+    if (Array.isArray(rawFixes.fixes)) return rawFixes.fixes;
+    if (Array.isArray(rawFixes.changes)) return rawFixes.changes;
+    if (Array.isArray(rawFixes.patches)) return rawFixes.patches;
+
+    // Try to find any array property
+    const arrayProp = Object.values(rawFixes).find(v => Array.isArray(v));
+    return arrayProp || [];
+  }
+
+  /**
+   * Generate fixes in chunks when there are too many failures for a single AI call.
+   */
+  async _generateFixesInChunks(analysis, sourceCode, failures) {
+    const BATCH_SIZE = 10;
+    const allFixes = [];
+    
+    for (let i = 0; i < failures.length; i += BATCH_SIZE) {
+      const batch = failures.slice(i, i + BATCH_SIZE);
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(failures.length / BATCH_SIZE);
+      
+      logger.info(`Generating fixes batch ${batchNum}/${totalBatches} (${batch.length} failures)...`);
+
+      // Build focused source code for this batch
+      const batchSourceCode = {};
+      for (const failure of batch) {
+        const file = failure.file;
+        if (file && sourceCode[`test:${file}`]) {
+          batchSourceCode[`test:${file}`] = sourceCode[`test:${file}`];
+        }
+      }
+
+      // Include app source in first batch only
+      if (i === 0) {
+        const appKeys = Object.keys(sourceCode).filter(k => k.startsWith('app:'));
+        for (const key of appKeys) {
+          batchSourceCode[key] = sourceCode[key];
+        }
+      }
+
+      try {
+        const batchAnalysis = {
+          ...analysis,
+          failures: batch,
+          batchInfo: `${batchNum}/${totalBatches}`
+        };
+
+        const rawFixes = await this.aiProvider.generateFix(batchAnalysis, batchSourceCode);
+        const fixes = this._unwrapFixes(rawFixes);
+        allFixes.push(...fixes);
+        logger.info(`  Batch ${batchNum}: ${fixes.length} fix(es)`);
+      } catch (err) {
+        logger.warn(`  Batch ${batchNum} failed: ${err.message}`);
+      }
+    }
+
+    // Deduplicate by file+originalCode
+    const seen = new Set();
+    return allFixes.filter(fix => {
+      if (!fix || !fix.file) return false;
+      const key = `${fix.file}::${(fix.originalCode || '').slice(0, 100)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   /**

@@ -110,26 +110,39 @@ Return ONLY valid JavaScript/TypeScript code, no markdown.`,
       'analyze-failures': `You are an expert debugging engineer. Analyze the test failures and return a JSON object with:
 - "failures": array of objects with:
   - "testName": name of the failing test
+  - "file": the test file path (e.g. "tests/e2e/dashboard.spec.js")
   - "category": "frontend" | "backend" | "test" | "environment"
-  - "rootCause": description of the root cause
-  - "suggestedFix": description of how to fix it
+  - "rootCause": specific description of the root cause (e.g. "selector .btn-submit not found on page", "API returns 500 instead of 200")
+  - "suggestedFix": concrete fix instruction (e.g. "change selector to button[type=submit]", "add error handling for 500 response")
   - "fixType": "app-code" | "test-code" | "env-config"
   - "confidence": number 0-1
+  - "originalCode": the exact failing line(s) of code if available
+  - "fixedCode": the corrected code if possible
+- "summary": brief summary of the common failure patterns
+Focus on test-code fixes (wrong selectors, wrong URLs, wrong assertions, missing waits).
 Return ONLY valid JSON, no markdown formatting.`,
 
       'generate-fix': `You are an expert software engineer. Generate code fixes for the identified issues.
-Return a JSON array of fix objects:
-[{
-  "file": "path/to/file",
-  "originalCode": "exact code to replace",
-  "fixedCode": "the fixed code",
-  "explanation": "why this fix resolves the issue"
-}]
+Return a JSON object with a "fixes" array:
+{
+  "fixes": [
+    {
+      "file": "path/to/file (relative to project root, e.g. generated-tests/tests/e2e/example.spec.js)",
+      "originalCode": "exact code to replace (copy-paste from the source)",
+      "fixedCode": "the corrected code",
+      "explanation": "why this fix resolves the issue"
+    }
+  ]
+}
 Rules:
 - originalCode must be an EXACT match of current code (copy-paste precision)
 - fixedCode must be syntactically valid
 - Fixes should be minimal — change only what's needed
 - Preserve code style and indentation
+- For Playwright E2E tests: fix selectors, assertions, timeouts, and page navigation
+- For API tests: fix request URLs, methods, expected status codes, and response assertions
+- If a test expects specific UI elements that don't exist, fix the selectors or remove the assertion
+- Always include the file path relative to the project root
 Return ONLY valid JSON, no markdown formatting.`
     };
 
