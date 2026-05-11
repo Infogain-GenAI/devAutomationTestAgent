@@ -232,6 +232,33 @@ Use unique and descriptive file names based on the resource (e.g., "tests/api/us
 
   _truncateContent(content, maxChars) {
     if (content.length <= maxChars) return content;
+    
+    // Try to intelligently truncate JSON content by reducing source code values
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed.sourceCode && typeof parsed.sourceCode === 'object') {
+        // Truncate individual source files to fit within budget
+        const overhead = JSON.stringify({ ...parsed, sourceCode: {} }).length;
+        const availableForSource = maxChars - overhead - 1000; // 1k buffer
+        const files = Object.entries(parsed.sourceCode);
+        const perFileLimit = Math.max(5000, Math.floor(availableForSource / Math.max(files.length, 1)));
+        
+        for (const [key, value] of files) {
+          if (typeof value === 'string' && value.length > perFileLimit) {
+            parsed.sourceCode[key] = value.slice(0, perFileLimit) + '\n// ... [truncated]';
+          }
+        }
+        
+        const reduced = JSON.stringify(parsed, null, 2);
+        if (reduced.length <= maxChars) {
+          logger.info(`Smart-truncated source code (${content.length} → ${reduced.length} chars)`);
+          return reduced;
+        }
+      }
+    } catch {
+      // Not JSON or parse failed — fall through to simple truncation
+    }
+
     logger.warn(`Truncating content from ${content.length} to ${maxChars} chars`);
     return content.slice(0, maxChars) + '\n... [truncated]';
   }

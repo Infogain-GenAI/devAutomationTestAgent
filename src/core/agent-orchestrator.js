@@ -550,6 +550,8 @@ class AgentOrchestrator {
       }
 
       // ── Step 9: Iteration loop ──────────────────────────────
+      // maxIterations = number of FIX cycles. Total test runs = maxIterations + 1
+      // (initial run + one re-run per fix cycle)
       const maxIterations = this.config.agent.maxIterations;
       let lastTestResult = null;
       let allPassed = false;
@@ -561,13 +563,43 @@ class AgentOrchestrator {
         lastTestResult = { passed: 0, failed: 0, total: 0, skipped: 0, failures: [] };
       }
 
+      // Initial test run (before any fix cycles)
+      if (!allPassed) {
+        this.currentIteration = 0;
+        updateStatus('testing');
+        logger.info(`\n${'='.repeat(60)}\n  INITIAL TEST RUN\n${'='.repeat(60)}`);
+
+        lastTestResult = await TestRunner.runTests(workDir, { appUrl });
+
+        // Check if all tests pass on first run
+        if (lastTestResult.failed === 0 && (lastTestResult.total > 0 || lastTestResult.exitCode === 0)) {
+          logger.info(`All tests passed on first run! (${lastTestResult.passed}/${lastTestResult.total})`);
+          allPassed = true;
+          this.iterationHistory.push({
+            iteration: 0,
+            total: lastTestResult.total,
+            passed: lastTestResult.passed,
+            failed: lastTestResult.failed,
+            appFixes: 0, testFixes: 0, reverted: 0
+          });
+        }
+
+        // Handle 0 tests but Playwright errored
+        if (!allPassed && lastTestResult.total === 0 && lastTestResult.exitCode !== 0) {
+          logger.warn(`⚠️ Playwright exited with code ${lastTestResult.exitCode} but 0 tests executed`);
+          logger.warn(`   This likely means tests could not run (app not started, config error, etc.)`);
+          lastTestResult.failed = 1;
+        }
+      }
+
+      // Fix cycles: analyze failures → apply fixes → re-run tests
       for (let iteration = 1; iteration <= maxIterations && !allPassed; iteration++) {
         this.currentIteration = iteration;
-        updateStatus('testing');
-        logger.info(`\n${'='.repeat(60)}\n  ITERATION ${iteration}/${maxIterations}\n${'='.repeat(60)}`);
 
-        // 9a. Run ALL tests
-        lastTestResult = await TestRunner.runTests(workDir, { appUrl });
+        // ── Fix step: AI analyzes failures and generates fixes ──
+        updateStatus('fixing');
+        logger.info(`\n${'='.repeat(60)}\n  FIX CYCLE ${iteration}/${maxIterations}\n${'='.repeat(60)}`);
+        logger.info(`Analyzing ${lastTestResult.failed} failure(s) from previous run...`);
 
         const iterationRecord = {
           iteration,
@@ -579,39 +611,13 @@ class AgentOrchestrator {
           reverted: 0
         };
 
-        // 9b. All tests pass?
-        if (lastTestResult.failed === 0 && (lastTestResult.total > 0 || lastTestResult.exitCode === 0)) {
-          logger.info(`All tests passed! (${lastTestResult.passed}/${lastTestResult.total})`);
-          allPassed = true;
-          this.iterationHistory.push(iterationRecord);
-          break;
-        }
-
-        // 9b-alt. No tests ran but Playwright errored — treat as failure
-        if (lastTestResult.total === 0 && lastTestResult.exitCode !== 0) {
-          logger.warn(`⚠️ Playwright exited with code ${lastTestResult.exitCode} but 0 tests executed`);
-          logger.warn(`   This likely means tests could not run (app not started, config error, etc.)`);
-          // Don't break — let the fix loop try to resolve
-          iterationRecord.failed = 1; // Force at least 1 failure for the fix loop
-          lastTestResult.failed = 1;
-        }
-
-        // 9c. At max iterations?
-        if (iteration === maxIterations) {
-          logger.info(`Max iterations reached (${maxIterations}). ${lastTestResult.failed} test(s) still failing.`);
-          this.iterationHistory.push(iterationRecord);
-          break;
-        }
-
-        // 9d. Root-cause analysis
-        updateStatus('fixing');
         let failureAnalysis, fixResult;
         try {
           failureAnalysis = await this.issueFixer.analyzeFailures(
             lastTestResult, codeAnalysis, workDir
           );
 
-          // 9e. Generate and apply fixes
+          // Generate and apply fixes
           fixResult = await this.issueFixer.generateAndApplyFixes(
             failureAnalysis, workDir, {
               appUrl,
@@ -619,10 +625,15 @@ class AgentOrchestrator {
             }
           );
         } catch (fixError) {
-          logger.warn(`Fix iteration failed: ${fixError.message}`);
-          logger.info('Continuing to next iteration without fixes...');
+          logger.warn(`Fix cycle ${iteration} failed: ${fixError.message}`);
           this.iterationHistory.push(iterationRecord);
           continue;
+        }
+
+        if (fixResult.noFixes || fixResult.applied.length === 0) {
+          logger.info('No fixes could be applied — skipping re-run');
+          this.iterationHistory.push(iterationRecord);
+          break;
         }
 
         iterationRecord.appFixes = fixResult.applied.filter(f => !f.file.startsWith('generated-tests/')).length;
@@ -638,23 +649,27 @@ class AgentOrchestrator {
           }
         }
 
-        // 9f-g. Already validated per-fix in generateAndApplyFixes
-        // Full regression check
-        if (fixResult.applied.length > 0) {
-          const regressionResult = await this.issueFixer.validateAllFixes(
-            workDir, lastTestResult.passed, { appUrl }
-          );
+        logger.info(`Applied ${fixResult.applied.length} fix(es). Re-running tests...`);
 
-          if (!regressionResult.passed) {
-            logger.warn('Regression detected after fixes — reverting batch');
-            // In production, we'd revert here. For now, log the issue.
-            iterationRecord.reverted += fixResult.applied.length;
-          }
+        // ── Re-run tests after fixes ──
+        updateStatus('testing');
+        lastTestResult = await TestRunner.runTests(workDir, { appUrl });
+
+        iterationRecord.total = lastTestResult.total;
+        iterationRecord.passed = lastTestResult.passed;
+        iterationRecord.failed = lastTestResult.failed;
+
+        // Check if all tests pass now
+        if (lastTestResult.failed === 0 && (lastTestResult.total > 0 || lastTestResult.exitCode === 0)) {
+          logger.info(`✅ All tests passed after fix cycle ${iteration}! (${lastTestResult.passed}/${lastTestResult.total})`);
+          allPassed = true;
+        } else {
+          logger.info(`Still ${lastTestResult.failed} failure(s) after fix cycle ${iteration}`);
         }
 
         this.iterationHistory.push(iterationRecord);
 
-        // 9h. Commit validated fixes
+        // Commit validated fixes
         const changedFiles = await this.repoManager.getChangedFiles();
         if (changedFiles.length > 0) {
           // Separate commits for app fixes vs test fixes
@@ -689,6 +704,10 @@ class AgentOrchestrator {
             }
           }
         }
+      }
+
+      if (!allPassed && lastTestResult) {
+        logger.info(`Completed ${maxIterations} fix cycle(s). ${lastTestResult.failed} test(s) still failing.`);
       }
 
       // ── Step 10: Stop target application ────────────────────

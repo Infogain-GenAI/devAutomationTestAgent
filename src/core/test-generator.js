@@ -425,7 +425,7 @@ module.exports = defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 2 : undefined,
-  maxFailures: 0,
+  maxFailures: process.env.CI ? 25 : 10,
   reporter: [
     ['json', { outputFile: '../test-results/results.json' }],
     ['list']
@@ -443,9 +443,9 @@ module.exports = defineConfig({
       use: { ...devices['Desktop Chrome'], headless: true }
     }
   ],
-  timeout: 15000,
+  timeout: process.env.CI ? 30000 : 15000,
   expect: {
-    timeout: 5000
+    timeout: 10000
   }
 });
 `;

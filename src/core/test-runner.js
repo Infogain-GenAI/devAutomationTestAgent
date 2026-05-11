@@ -54,8 +54,9 @@ class TestRunner {
     // Ensure @playwright/test is available from the generated-tests directory
     await TestRunner._ensurePlaywrightInstalled(testDir, workDir);
 
-    // Global timeout: cap the entire test run to 8 minutes to prevent CI job timeouts
-    const globalTimeout = config.globalTimeout || parseInt(process.env.PW_GLOBAL_TIMEOUT) || 8 * 60 * 1000;
+    // Global timeout: cap the entire test run to prevent CI job timeouts
+    // Use 12 minutes for large test suites (84+ files) in CI containers
+    const globalTimeout = config.globalTimeout || parseInt(process.env.PW_GLOBAL_TIMEOUT) || 12 * 60 * 1000;
 
     const args = [
       'playwright', 'test',
