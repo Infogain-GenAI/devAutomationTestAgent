@@ -166,11 +166,12 @@ git config --global user.name "IGNIS Automation Agent" 2>/dev/null || true
 # Mark workspace as safe directory for git
 git config --global --add safe.directory "${REPO_PATH}" 2>/dev/null || true
 
-# Configure git credentials from environment token (safety net for git push)
-# This ensures git push works even if actions/checkout credentials are missing/expired
+# Configure git credentials for push/PR at LOCAL repo level
+# Local config overrides whatever actions/checkout stored in .git/config
 PUSH_TOKEN="${GITHUB_PAT:-$GITHUB_TOKEN}"
-if [ -n "$PUSH_TOKEN" ]; then
-  git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(echo -n "x-access-token:${PUSH_TOKEN}" | base64 -w 0)" 2>/dev/null || true
+if [ -n "$PUSH_TOKEN" ] && [ -d "${REPO_PATH}/.git" ]; then
+  git -C "${REPO_PATH}" config http.https://github.com/.extraheader "AUTHORIZATION: basic $(echo -n "x-access-token:${PUSH_TOKEN}" | base64 -w 0)" 2>/dev/null || true
+  echo "✅ Git push credentials configured (local repo config)"
 fi
 
 # Run the CLI
