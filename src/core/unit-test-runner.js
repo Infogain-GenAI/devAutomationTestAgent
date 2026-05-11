@@ -208,10 +208,13 @@ class UnitTestRunner {
     // Ensure test framework is available
     await this.installTestFramework(workDir, framework);
 
+    // Proactively check & install missing test dependencies (setup files, config references)
+    const projectRoot = this._findProjectRoot(workDir);
+    await this._verifyTestDependencies(projectRoot, framework);
+
     logger.info(`Running ${framework} unit tests (${allTestFiles.length} test file(s) from ${dirs.length} dir(s))...`);
 
     // Look for jest.config.js in project root or generated-tests directory
-    const projectRoot = this._findProjectRoot(workDir);
     const generatedTestsDir = path.join(workDir, 'generated-tests');
     const generatedJestConfig = path.join(generatedTestsDir, 'jest.config.js');
     const projectJestConfig = path.join(projectRoot, 'jest.config.js');
@@ -274,6 +277,19 @@ class UnitTestRunner {
         }
       }
       
+      // Check for missing npm modules (e.g. @testing-library/jest-dom from jest.setup.js)
+      if (results.exitCode !== 0 && results.total === 0) {
+        const missingModules = this._extractMissingNpmModules(results.errors, results.rawOutput);
+        if (missingModules.length > 0) {
+          logger.info(`Missing test dependencies detected: ${missingModules.join(', ')}`);
+          const installed = await this._installMissingTestDeps(missingModules, jestCwd);
+          if (installed > 0) {
+            logger.info(`Installed ${installed} missing module(s). Retrying tests...`);
+            results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+          }
+        }
+      }
+
       // If still failing with 0 tests, check for broken spec files or config issues
       if (results.exitCode !== 0 && results.total === 0) {
         const brokenFiles = this._extractBrokenSpecFiles(results.errors, results.rawOutput, jestCwd);
@@ -824,6 +840,152 @@ class UnitTestRunner {
     // If error is about decorators, can't easily fix
     
     return null;
+  }
+
+  /**
+   * Proactively verify that test dependencies (from jest.setup.js, jest.config, etc.) are installed.
+   * Checks imports/requires in setup files and installs any missing npm modules before running tests.
+   */
+  async _verifyTestDependencies(projectRoot, framework) {
+    if (framework !== 'jest') return; // Only Jest has setup files commonly
+
+    const setupFiles = [
+      'jest.setup.js', 'jest.setup.ts', 'jest.setup.mjs',
+      'setupTests.js', 'setupTests.ts',
+      'src/setupTests.js', 'src/setupTests.ts',
+      'test/setup.js', 'test/setup.ts',
+      'tests/setup.js', 'tests/setup.ts'
+    ];
+
+    // Also parse jest.config for setupFilesAfterFramework / setupFiles references
+    const configFiles = ['jest.config.js', 'jest.config.ts', 'jest.config.mjs'];
+    let extraSetupFiles = [];
+
+    for (const configFile of configFiles) {
+      const configPath = path.join(projectRoot, configFile);
+      if (!fs.existsSync(configPath)) continue;
+      try {
+        const configContent = fs.readFileSync(configPath, 'utf-8');
+        // Extract paths from setupFilesAfterFramework / setupFiles arrays
+        const setupMatch = configContent.match(/setupFiles(?:AfterFramework)?\s*:\s*\[([^\]]*)\]/s);
+        if (setupMatch) {
+          const paths = setupMatch[1].match(/['"]([^'"]+)['"]/g);
+          if (paths) {
+            for (const p of paths) {
+              const cleanPath = p.replace(/['"<>]/g, '');
+              if (cleanPath.startsWith('.') || cleanPath.startsWith('/')) {
+                extraSetupFiles.push(cleanPath.replace(/^\.\//, ''));
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // Collect all modules required/imported by setup files
+    const missingModules = new Set();
+    const allSetupFiles = [...setupFiles, ...extraSetupFiles];
+
+    for (const setupFile of allSetupFiles) {
+      const fullPath = path.join(projectRoot, setupFile);
+      if (!fs.existsSync(fullPath)) continue;
+
+      try {
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        // Extract all require('X') and import ... from 'X'
+        const requirePattern = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+        const importPattern = /import\s+.*?from\s+['"]([^'"]+)['"]/g;
+        const importSideEffect = /import\s+['"]([^'"]+)['"]/g;
+
+        for (const pattern of [requirePattern, importPattern, importSideEffect]) {
+          let match;
+          while ((match = pattern.exec(content)) !== null) {
+            const mod = match[1];
+            // Only npm packages (not relative/absolute paths)
+            if (mod.startsWith('.') || mod.startsWith('/')) continue;
+            const pkgName = mod.startsWith('@')
+              ? mod.split('/').slice(0, 2).join('/')
+              : mod.split('/')[0];
+
+            // Check if module resolves from the project
+            try {
+              require.resolve(pkgName, { paths: [projectRoot] });
+            } catch {
+              missingModules.add(pkgName);
+            }
+          }
+        }
+      } catch {}
+    }
+
+    if (missingModules.size === 0) return;
+
+    const toInstall = [...missingModules];
+    logger.info(`Pre-test check: ${toInstall.length} missing test dep(s) detected: ${toInstall.join(', ')}`);
+    await this._installMissingTestDeps(toInstall, projectRoot);
+  }
+
+  /**
+   * Extract missing npm module names from Jest error output.
+   * Matches "Cannot find module 'X'" where X is an npm package (not a relative path).
+   */
+  _extractMissingNpmModules(stderr, stdout) {
+    const combined = (stderr || '') + '\n' + (stdout || '');
+    const modules = new Set();
+
+    const pattern = /Cannot find module ['"]([^'"]+)['"]/g;
+    let match;
+    while ((match = pattern.exec(combined)) !== null) {
+      const mod = match[1];
+      // Only npm packages (not relative paths or absolute paths)
+      if (!mod.startsWith('.') && !mod.startsWith('/') && !mod.includes('\\')) {
+        // Get the package name (handle scoped packages like @testing-library/jest-dom)
+        const pkgName = mod.startsWith('@')
+          ? mod.split('/').slice(0, 2).join('/')
+          : mod.split('/')[0];
+        modules.add(pkgName);
+      }
+    }
+
+    return [...modules];
+  }
+
+  /**
+   * Install missing test dependencies (npm packages referenced in setup/config files).
+   * Returns the number of packages successfully installed.
+   */
+  async _installMissingTestDeps(modules, cwd) {
+    if (!modules || modules.length === 0) return 0;
+
+    const { execSync } = require('child_process');
+    let installed = 0;
+
+    // Batch install all missing modules at once
+    const toInstall = modules.slice(0, 10); // Cap at 10 to avoid runaway installs
+    logger.info(`Installing missing test deps: ${toInstall.join(' ')}`);
+
+    const strategies = [
+      { cmd: `npm install --save-dev ${toInstall.join(' ')}`, desc: 'devDep' },
+      { cmd: `npm install --no-save ${toInstall.join(' ')}`, desc: 'no-save' }
+    ];
+
+    for (const strategy of strategies) {
+      try {
+        execSync(strategy.cmd, {
+          cwd,
+          stdio: 'pipe',
+          timeout: 120000,
+          env: { ...process.env, NODE_ENV: 'development' }
+        });
+        logger.info(`Installed ${toInstall.length} missing module(s) (${strategy.desc})`);
+        installed = toInstall.length;
+        break;
+      } catch (err) {
+        logger.debug(`Install strategy "${strategy.desc}" failed: ${err.message.slice(0, 150)}`);
+      }
+    }
+
+    return installed;
   }
 
   /**

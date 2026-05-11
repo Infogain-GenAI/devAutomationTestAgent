@@ -63,6 +63,51 @@ class StackDetector {
       }
     }
 
+    // Full-stack frameworks: Next.js and Nuxt have built-in API routes,
+    // so they serve as both frontend AND backend. Detect API route directories.
+    if (!result.backend && result.frontend) {
+      const fw = result.frontend.framework;
+      const fwDir = path.join(workDir, result.frontend.dir || '.');
+
+      if (fw === 'nextjs') {
+        // Next.js API routes: app/api/, src/app/api/, or pages/api/
+        const apiDirs = [
+          path.join(fwDir, 'app', 'api'),
+          path.join(fwDir, 'src', 'app', 'api'),
+          path.join(fwDir, 'pages', 'api'),
+          path.join(fwDir, 'src', 'pages', 'api')
+        ];
+        if (apiDirs.some(d => fs.existsSync(d))) {
+          result.backend = {
+            framework: 'nextjs-api',
+            version: result.frontend.version,
+            startCommand: result.frontend.startCommand,
+            port: result.frontend.port,
+            entryPoint: 'app/api',
+            dir: result.frontend.dir || '.'
+          };
+          logger.info(`Backend detected: nextjs-api (API routes in ${result.backend.dir})`);
+        }
+      } else if (fw === 'nuxt') {
+        // Nuxt server routes: server/api/ or server/routes/
+        const apiDirs = [
+          path.join(fwDir, 'server', 'api'),
+          path.join(fwDir, 'server', 'routes')
+        ];
+        if (apiDirs.some(d => fs.existsSync(d))) {
+          result.backend = {
+            framework: 'nuxt-api',
+            version: result.frontend.version,
+            startCommand: result.frontend.startCommand,
+            port: result.frontend.port,
+            entryPoint: 'server/api',
+            dir: result.frontend.dir || '.'
+          };
+          logger.info(`Backend detected: nuxt-api (server routes in ${result.backend.dir})`);
+        }
+      }
+    }
+
     // Detect Python frameworks
     const reqPath = path.join(workDir, 'requirements.txt');
     if (fs.existsSync(reqPath) && !result.backend) {

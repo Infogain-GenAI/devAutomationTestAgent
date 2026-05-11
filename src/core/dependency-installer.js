@@ -73,7 +73,9 @@ class DependencyInstaller {
     }
 
     const commands = {
-      npm: fs.existsSync(path.join(workDir, 'package-lock.json')) ? 'npm ci' : 'npm install',
+      npm: fs.existsSync(path.join(workDir, 'package-lock.json'))
+        ? 'npm ci --include=dev'
+        : 'npm install --include=dev',
       yarn: 'yarn install --frozen-lockfile',
       pnpm: 'pnpm install --frozen-lockfile',
       pip: 'pip install -r requirements.txt',
