@@ -83,6 +83,17 @@ IMPORTANT: Generate tests ONLY for the files listed above. Do NOT create tests f
 - Use const app = require('relative/path/to/app') to import the Express app
 - File names MUST end with .test.js (NOT .spec.js — those are for Playwright)
 - DO NOT require or import 'jest', 'mocha', or 'jasmine' — they are test runners and provide globals automatically
+
+COMPREHENSIVE TEST COVERAGE REQUIREMENTS:
+- Generate tests for ALL possible scenarios including:
+  * Happy path (normal successful operation)
+  * Edge cases (empty inputs, max values, boundary conditions)
+  * Error cases (invalid inputs, missing required fields, malformed data)
+  * NFR scenarios (response time assertions, memory usage if applicable)
+  * Security (unauthorized access, SQL injection attempts, XSS payloads)
+  * Concurrency scenarios where applicable
+  * Null/undefined handling
+  * Type coercion edge cases
 `;
       }
       testInstructions += `Return JSON with:
@@ -165,6 +176,82 @@ Use unique and descriptive file names based on the resource (e.g., "tests/api/us
     { "path": "tests/${testType}/test.spec.js", "content": "// full test file" }
   ]
 }`;
+    }
+
+    // ── Add documentation-driven test instructions ──
+    if (analysisResult.appDocumentation) {
+      testInstructions += `
+
+DOCUMENTATION-DRIVEN TEST GENERATION:
+Use the following application documentation to generate comprehensive tests:
+`;
+      if (analysisResult.appDocumentation.edgeCases && analysisResult.appDocumentation.edgeCases.length > 0) {
+        testInstructions += `
+EDGE CASES TO TEST (MANDATORY — generate tests for ALL of these):
+`;
+        analysisResult.appDocumentation.edgeCases.forEach((ec, idx) => {
+          testInstructions += `${idx + 1}. [${ec.category || 'General'}] ${ec.scenario} → Expected: ${ec.expectedBehavior || 'handle gracefully'}\n`;
+        });
+      }
+
+      if (analysisResult.appDocumentation.nfrScenarios && analysisResult.appDocumentation.nfrScenarios.length > 0) {
+        testInstructions += `
+NON-FUNCTIONAL REQUIREMENTS (NFR) — generate tests for these:
+`;
+        analysisResult.appDocumentation.nfrScenarios.forEach((nfr, idx) => {
+          testInstructions += `${idx + 1}. [${nfr.category}] ${nfr.scenario} (Metric: ${nfr.metric || 'N/A'})\n`;
+        });
+      }
+
+      if (analysisResult.appDocumentation.securityConsiderations && analysisResult.appDocumentation.securityConsiderations.length > 0) {
+        testInstructions += `
+SECURITY TEST SCENARIOS — generate tests for these:
+`;
+        analysisResult.appDocumentation.securityConsiderations.forEach((sec, idx) => {
+          const desc = typeof sec === 'string' ? sec : (sec.testCase || sec.vulnerability || JSON.stringify(sec));
+          testInstructions += `${idx + 1}. ${desc}\n`;
+        });
+      }
+
+      if (analysisResult.appDocumentation.errorScenarios && analysisResult.appDocumentation.errorScenarios.length > 0) {
+        testInstructions += `
+ERROR HANDLING SCENARIOS — generate tests for these:
+`;
+        analysisResult.appDocumentation.errorScenarios.forEach((err, idx) => {
+          testInstructions += `${idx + 1}. ${err.scenario || err.name || 'Error'}: Expected → ${err.expectedBehavior || err.handling || 'graceful handling'}\n`;
+        });
+      }
+
+      if (analysisResult.appDocumentation.businessRules && analysisResult.appDocumentation.businessRules.length > 0) {
+        testInstructions += `
+BUSINESS RULES TO VALIDATE — ensure tests cover these:
+`;
+        analysisResult.appDocumentation.businessRules.forEach((rule, idx) => {
+          testInstructions += `${idx + 1}. ${rule.rule} (Context: ${rule.context || 'N/A'})\n`;
+        });
+      }
+    }
+
+    // ── Add existing test extension instructions ──
+    if (analysisResult.existingTestContext) {
+      testInstructions += `
+
+⚠️ CRITICAL: EXISTING TESTS DETECTED — DO NOT REWRITE FROM SCRATCH!
+There are ${analysisResult.existingTestContext.totalExistingTests} existing test file(s).
+${analysisResult.existingTestContext.instruction}
+
+Existing test files:
+${analysisResult.existingTestContext.existingFiles.map(f => `- ${f}`).join('\n')}
+
+When generating tests:
+1. Use the SAME coding style, patterns, and conventions as existing tests
+2. Use the SAME file naming convention
+3. ONLY generate NEW test cases that don't already exist
+4. Focus on: edge cases, boundary conditions, error handling, NFR scenarios
+5. Add describe blocks for untested features/functions
+6. Include negative test cases (invalid inputs, unauthorized access, etc.)
+7. Include performance/timeout assertions where applicable
+`;
     }
     
     const userMessage = JSON.stringify({

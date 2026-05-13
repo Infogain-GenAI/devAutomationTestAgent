@@ -68,6 +68,45 @@ class ClaudeProvider extends BaseAIProvider {
     
     instructions += `\nReturn a JSON object with:\n{\n  "files": [\n    { "path": "tests/${testType}/descriptive-name.${isUnitTest ? 'test' : 'spec'}.js", "content": "// full test file content" }\n  ]\n}`;
 
+    // ── Add documentation-driven test instructions ──
+    if (analysisResult.appDocumentation) {
+      instructions += `\n\nDOCUMENTATION-DRIVEN TEST GENERATION:\n`;
+      if (analysisResult.appDocumentation.edgeCases && analysisResult.appDocumentation.edgeCases.length > 0) {
+        instructions += `\nEDGE CASES TO TEST (MANDATORY):\n`;
+        analysisResult.appDocumentation.edgeCases.forEach((ec, idx) => {
+          instructions += `${idx + 1}. [${ec.category || 'General'}] ${ec.scenario} → Expected: ${ec.expectedBehavior || 'handle gracefully'}\n`;
+        });
+      }
+      if (analysisResult.appDocumentation.nfrScenarios && analysisResult.appDocumentation.nfrScenarios.length > 0) {
+        instructions += `\nNFR SCENARIOS TO TEST:\n`;
+        analysisResult.appDocumentation.nfrScenarios.forEach((nfr, idx) => {
+          instructions += `${idx + 1}. [${nfr.category}] ${nfr.scenario} (Metric: ${nfr.metric || 'N/A'})\n`;
+        });
+      }
+      if (analysisResult.appDocumentation.securityConsiderations && analysisResult.appDocumentation.securityConsiderations.length > 0) {
+        instructions += `\nSECURITY TESTS:\n`;
+        analysisResult.appDocumentation.securityConsiderations.forEach((sec, idx) => {
+          const desc = typeof sec === 'string' ? sec : (sec.testCase || sec.vulnerability || JSON.stringify(sec));
+          instructions += `${idx + 1}. ${desc}\n`;
+        });
+      }
+      if (analysisResult.appDocumentation.errorScenarios && analysisResult.appDocumentation.errorScenarios.length > 0) {
+        instructions += `\nERROR HANDLING TESTS:\n`;
+        analysisResult.appDocumentation.errorScenarios.forEach((err, idx) => {
+          instructions += `${idx + 1}. ${err.scenario || err.name}: Expected → ${err.expectedBehavior || err.handling || 'graceful handling'}\n`;
+        });
+      }
+    }
+
+    // ── Add existing test extension instructions ──
+    if (analysisResult.existingTestContext) {
+      instructions += `\n\n⚠️ CRITICAL: EXISTING TESTS DETECTED — DO NOT REWRITE FROM SCRATCH!\n`;
+      instructions += `There are ${analysisResult.existingTestContext.totalExistingTests} existing test file(s).\n`;
+      instructions += `${analysisResult.existingTestContext.instruction}\n`;
+      instructions += `Existing files: ${analysisResult.existingTestContext.existingFiles.join(', ')}\n`;
+      instructions += `Generate ONLY NEW test cases for uncovered scenarios, edge cases, and NFR.\n`;
+    }
+
     const userMessage = JSON.stringify({
       testType,
       framework,

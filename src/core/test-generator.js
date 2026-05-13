@@ -17,10 +17,16 @@ class TestGenerator {
    * @param {string[]} testTypes - Types of tests to generate
    * @param {object} techStack - Technology stack info
    * @param {object} testGaps - Identified test gaps (optional)
+   * @param {object} options - Additional options { appDocumentation, existingTests }
    */
-  async generateAll(workDir, analysisResult, testTypes, techStack, testGaps = null) {
+  async generateAll(workDir, analysisResult, testTypes, techStack, testGaps = null, options = {}) {
     const outputDir = path.join(workDir, 'generated-tests');
     fs.mkdirSync(outputDir, { recursive: true });
+
+    // Store documentation and existing tests context for use during generation
+    this._appDocumentation = options.appDocumentation || null;
+    this._existingTests = options.existingTests || null;
+    this._workDir = workDir;
 
     const generated = {};
 
@@ -150,6 +156,29 @@ class TestGenerator {
       testGaps: gaps,
       generateFor: gaps ? 'gaps-only' : 'full-coverage'
     };
+
+    // Enrich with documentation context if available
+    if (this._appDocumentation) {
+      enhancedAnalysis.appDocumentation = {
+        features: this._appDocumentation.features || [],
+        apiEndpoints: this._appDocumentation.apiEndpoints || [],
+        edgeCases: this._appDocumentation.edgeCases || [],
+        nfrScenarios: this._appDocumentation.nfrScenarios || [],
+        securityConsiderations: this._appDocumentation.securityConsiderations || [],
+        errorScenarios: this._appDocumentation.errorScenarios || [],
+        businessRules: this._appDocumentation.businessRules || [],
+        dataModels: this._appDocumentation.dataModels || [],
+        authenticationFlow: this._appDocumentation.authenticationFlow || null
+      };
+    }
+
+    // Include existing test context so AI extends rather than rewrites
+    if (this._existingTests && this._workDir) {
+      const existingTestContext = this._getExistingTestContext(testType);
+      if (existingTestContext) {
+        enhancedAnalysis.existingTestContext = existingTestContext;
+      }
+    }
 
     const result = await this.aiProvider.generateTests(enhancedAnalysis, testType, techStack);
 
@@ -391,6 +420,33 @@ class TestGenerator {
         totalFiles: fullAnalysis.structure.stats.totalFiles,
         totalSize: fullAnalysis.structure.stats.totalSize
       };
+    }
+
+    // Include documentation context for richer test generation
+    if (this._appDocumentation) {
+      focused.appDocumentation = {
+        edgeCases: (this._appDocumentation.edgeCases || []).filter(ec => {
+          // Filter edge cases relevant to this chunk
+          const chunkKeywords = chunk.scenarios.map(s => 
+            typeof s === 'string' ? s : (s.path || s.route || s.name || '')
+          ).filter(Boolean);
+          return chunkKeywords.some(kw => 
+            (ec.relatedFeature || '').toLowerCase().includes(kw.toLowerCase()) ||
+            (ec.scenario || '').toLowerCase().includes(kw.toLowerCase())
+          );
+        }).slice(0, 10),
+        nfrScenarios: (this._appDocumentation.nfrScenarios || []).slice(0, 5),
+        securityConsiderations: (this._appDocumentation.securityConsiderations || []).slice(0, 5),
+        errorScenarios: (this._appDocumentation.errorScenarios || []).slice(0, 5)
+      };
+    }
+
+    // Include existing test context for extension
+    if (this._existingTests && this._workDir) {
+      const existingCtx = this._getExistingTestContext(testType);
+      if (existingCtx) {
+        focused.existingTestContext = existingCtx;
+      }
     }
 
     return focused;
@@ -1016,6 +1072,60 @@ module.exports = {
         fs.writeFileSync(fullPath, lines.join('\n'), 'utf-8');
       }
     }
+  }
+
+  /**
+   * Get existing test context for a given test type.
+   * Reads existing test files to provide AI with context for extension.
+   * @param {string} testType - Test type (unit, api, e2e, etc.)
+   * @returns {object|null} - Existing test context or null
+   */
+  _getExistingTestContext(testType) {
+    if (!this._existingTests || !this._workDir) return null;
+
+    const typeMap = {
+      'unit': ['unit', 'integration'],
+      'integration': ['integration', 'unit'],
+      'e2e': ['e2e'],
+      'api': ['api']
+    };
+
+    const relevantTypes = typeMap[testType] || [testType];
+    const existingTestFiles = [];
+
+    for (const type of relevantTypes) {
+      const tests = this._existingTests[type] || [];
+      for (const test of tests) {
+        if (test.file) existingTestFiles.push(test.file);
+      }
+    }
+
+    if (existingTestFiles.length === 0) return null;
+
+    // Read content of existing test files (limit to first 10 for context size)
+    const existingTestContent = {};
+    const filesToRead = existingTestFiles.slice(0, 10);
+
+    for (const relPath of filesToRead) {
+      const fullPath = path.join(this._workDir, relPath);
+      if (fs.existsSync(fullPath)) {
+        try {
+          const content = fs.readFileSync(fullPath, 'utf-8');
+          existingTestContent[relPath] = content.length > 8000
+            ? content.slice(0, 8000) + '\n// ... [truncated]'
+            : content;
+        } catch { /* skip */ }
+      }
+    }
+
+    if (Object.keys(existingTestContent).length === 0) return null;
+
+    return {
+      existingFiles: Object.keys(existingTestContent),
+      existingTestCode: existingTestContent,
+      totalExistingTests: existingTestFiles.length,
+      instruction: 'EXTEND these existing tests — do NOT rewrite from scratch. Add new test cases for uncovered scenarios, edge cases, and NFR. Maintain the same code style, patterns, and conventions used in existing tests.'
+    };
   }
 }
 

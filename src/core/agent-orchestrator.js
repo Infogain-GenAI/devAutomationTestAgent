@@ -10,6 +10,7 @@ const DependencyInstaller = require('./dependency-installer');
 const EnvHandler = require('./env-handler');
 const StackDetector = require('./stack-detector');
 const CodeAnalyzer = require('./code-analyzer');
+const DocumentationGenerator = require('./documentation-generator');
 const TestGenerator = require('./test-generator');
 const TestRunner = require('./test-runner');
 const UnitTestRunner = require('./unit-test-runner');
@@ -31,6 +32,7 @@ class AgentOrchestrator {
     this.aiProvider = createProvider(config);
     this.repoManager = new RepoManager(config);
     this.codeAnalyzer = new CodeAnalyzer(this.aiProvider);
+    this.documentationGenerator = new DocumentationGenerator(this.aiProvider);
     this.testGenerator = new TestGenerator(this.aiProvider);
     this.unitTestRunner = new UnitTestRunner(config);
     this.testCoverageScanner = new TestCoverageScanner();
@@ -200,6 +202,20 @@ class AgentOrchestrator {
         }
       }
 
+      // ── Step 6d: Generate Application Documentation ─────────
+      logger.info('Generating comprehensive application documentation...');
+      updateStatus('documenting');
+      let appDocumentation = null;
+      try {
+        const docResult = await this.documentationGenerator.generateDocumentation(
+          workDir, codeAnalysis, techStack
+        );
+        appDocumentation = docResult.documentation;
+        logger.info('✅ Application documentation generated');
+      } catch (docErr) {
+        logger.warn(`Documentation generation failed (non-fatal): ${docErr.message}`);
+      }
+
       // ── Step 6.5: Scan for Existing Tests ───────────────────
       logger.info('Scanning repository for existing test coverage...');
       updateStatus('scanning-tests');
@@ -252,7 +268,7 @@ class AgentOrchestrator {
       });
       
       const generated = typesToGenerate.length > 0 
-        ? await this.testGenerator.generateAll(workDir, codeAnalysis, typesToGenerate, techStack, gapsForGeneration)
+        ? await this.testGenerator.generateAll(workDir, codeAnalysis, typesToGenerate, techStack, gapsForGeneration, { appDocumentation, existingTests })
         : {};
       
       logger.info('✅ Test generation complete');
@@ -833,6 +849,7 @@ class AgentOrchestrator {
           actualIterations: this.currentIteration,
           testTypes: this.config.testing.types,
           codeAnalysis,
+          appDocumentation: appDocumentation || null,
           backendValidation,
           bestPracticesValidation,
           testResults: lastTestResult,

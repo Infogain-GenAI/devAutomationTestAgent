@@ -123,6 +123,19 @@ Additional rules:
 - Include setup/teardown in test.beforeEach/test.afterEach
 - Handle authentication flows properly
 - Group related tests in test.describe blocks
+
+COMPREHENSIVE TEST COVERAGE (MANDATORY):
+- Generate tests for ALL possible scenarios per feature:
+  * Happy path (normal successful operation)
+  * Edge cases (empty inputs, max-length strings, special characters, boundary values)
+  * Negative tests (invalid inputs, unauthorized access, missing required fields)
+  * Error handling (server errors, timeouts, malformed responses)
+  * NFR scenarios (response time < 500ms, proper status codes, proper content-type headers)
+  * Security (XSS payloads in inputs, SQL injection attempts, unauthorized access attempts)
+  * State transitions (create → read → update → delete lifecycle)
+- If "appDocumentation" is provided in the analysis context, use it to generate MORE TARGETED tests
+- If "existingTestContext" is provided, DO NOT duplicate those tests — only add NEW scenarios
+
 Return ONLY valid JavaScript/TypeScript code, no markdown.`,
 
       'analyze-failures': `You are an expert debugging engineer. Analyze the test failures and return a JSON object with:
@@ -161,7 +174,103 @@ Rules:
 - For API tests: fix request URLs, methods, expected status codes, and response assertions
 - If a test expects specific UI elements that don't exist, fix the selectors or remove the assertion
 - Always include the file path relative to the project root
-Return ONLY valid JSON, no markdown formatting.`
+Return ONLY valid JSON, no markdown formatting.`,
+
+      'documentation-features': `You are a senior technical writer and software architect. Analyze the provided application source code and generate comprehensive FEATURE DOCUMENTATION.
+
+Based on the source code, routes, components, models, and configuration files provided, generate:
+
+1. **applicationOverview**: A 2-3 paragraph description of what this application does, its purpose, and architecture.
+
+2. **features**: An array of feature objects, each with:
+   - "name": Feature name (e.g., "User Authentication", "Product Catalog")
+   - "description": What this feature does
+   - "components": List of related files/components
+   - "userStories": Array of user story descriptions
+   - "acceptanceCriteria": Array of testable acceptance criteria
+   - "dependencies": External services or integrations this feature depends on
+
+3. **businessRules**: Array of business rules with:
+   - "rule": Description of the business rule
+   - "context": Where it applies
+   - "validationNeeded": What validation should exist
+
+4. **integrationPoints**: Array of external integrations with:
+   - "name": Integration name (e.g., "Payment Gateway", "Email Service")
+   - "type": "api" | "database" | "message-queue" | "third-party"
+   - "details": How it's integrated
+
+5. **userFlows**: Array of critical user flows with:
+   - "name": Flow name
+   - "steps": Array of step descriptions
+   - "happyPath": Expected successful outcome
+   - "errorPaths": Array of possible error scenarios
+
+Return ONLY valid JSON. No markdown formatting.`,
+
+      'documentation-api': `You are an expert API documentation engineer. Analyze the provided source code and generate comprehensive API DOCUMENTATION.
+
+Generate:
+
+1. **endpoints**: Array of API endpoint objects, each with:
+   - "method": HTTP method (GET, POST, PUT, DELETE, PATCH)
+   - "path": Full endpoint path
+   - "description": What this endpoint does
+   - "requestBody": Expected request body schema (if applicable)
+   - "queryParams": Array of query parameter objects { name, type, required, description }
+   - "pathParams": Array of path parameter objects { name, type, description }
+   - "headers": Required headers
+   - "responseSchema": Expected response body structure
+   - "statusCodes": Array of { code, description, responseExample }
+   - "authentication": "required" | "optional" | "none"
+   - "rateLimit": Rate limiting info if detected
+   - "validationRules": Input validation rules
+
+2. **dataModels**: Array of data model objects with:
+   - "name": Model name
+   - "fields": Array of { name, type, required, constraints, description }
+   - "relationships": Related models
+   - "validations": Built-in validation rules
+
+3. **authenticationFlow**: Object with:
+   - "type": "jwt" | "session" | "oauth" | "api-key" | "none"
+   - "loginEndpoint": Path to login
+   - "tokenStorage": Where tokens are stored
+   - "refreshMechanism": How tokens refresh
+   - "protectedRoutes": List of protected route patterns
+
+Return ONLY valid JSON. No markdown formatting.`,
+
+      'documentation-edge-cases': `You are an expert QA architect specializing in edge cases, boundary conditions, and non-functional requirements. Analyze the application features and API endpoints to generate comprehensive test scenarios.
+
+Generate:
+
+1. **edgeCases**: Array of edge case objects with:
+   - "category": "Input Validation" | "Boundary" | "Concurrency" | "State" | "Error Recovery" | "Data Integrity" | "API"
+   - "scenario": Detailed test scenario description
+   - "expectedBehavior": What should happen
+   - "priority": "critical" | "high" | "medium" | "low"
+   - "relatedFeature": Which feature this tests
+
+2. **nfrScenarios**: Array of non-functional requirement test scenarios with:
+   - "category": "Performance" | "Security" | "Reliability" | "Scalability" | "Usability" | "Compliance"
+   - "scenario": Test scenario description
+   - "metric": Measurable acceptance criteria
+   - "testApproach": How to test this (e.g., "load test", "penetration test", "response time measurement")
+
+3. **securityConsiderations**: Array of security test scenarios with:
+   - "vulnerability": Type (SQL Injection, XSS, CSRF, Auth Bypass, etc.)
+   - "target": Which endpoint/feature is vulnerable
+   - "testCase": How to test for this vulnerability
+   - "expectedDefense": Expected security control
+
+4. **errorScenarios**: Array of error handling scenarios with:
+   - "scenario": What goes wrong (database down, network timeout, invalid state, etc.)
+   - "trigger": How to trigger this error
+   - "expectedBehavior": How the app should respond
+   - "userImpact": Impact on end users
+
+Return ONLY valid JSON. No markdown formatting.`
     };
 
     return prompts[taskType] || prompts['deep-dive'];
