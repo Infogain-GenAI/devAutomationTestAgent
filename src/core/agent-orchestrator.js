@@ -258,6 +258,68 @@ class AgentOrchestrator {
       logger.info('✅ Test generation complete');
       logger.info(`Generated test files: ${Object.values(generated).reduce((sum, g) => sum + (g.files?.length || 0), 0)} total`);
 
+      // ── Step 7a: Validate generated tests (syntax + dry run) ─
+      const validationTestDir = path.join(workDir, 'generated-tests');
+      if (fs.existsSync(validationTestDir)) {
+        logger.info('Validating generated test files...');
+        updateStatus('validating-tests');
+        
+        const allGenFiles = [];
+        Object.values(generated).forEach(g => {
+          if (g.files) allGenFiles.push(...g.files);
+        });
+
+        if (allGenFiles.length > 0) {
+          // Syntax validation + AI fix is already done inside test-generator
+          // Now do a quick Playwright list-tests check to catch runtime import errors
+          const specFiles = allGenFiles.filter(f => f.endsWith('.spec.js') || f.endsWith('.spec.ts'));
+          if (specFiles.length > 0 && fs.existsSync(path.join(validationTestDir, 'playwright.config.js'))) {
+            try {
+              const { execSync } = require('child_process');
+              const listResult = execSync('npx playwright test --list 2>&1', {
+                cwd: validationTestDir,
+                timeout: 60000,
+                encoding: 'utf-8',
+                env: { ...process.env, CI: 'true', APP_URL: appUrl || 'http://localhost:3000' }
+              });
+              const testCount = (listResult.match(/\d+ test/)?.[0]) || 'unknown';
+              logger.info(`  Playwright validation: ${testCount}(s) found across ${specFiles.length} file(s)`);
+            } catch (listErr) {
+              const stderr = listErr.stderr || listErr.stdout || listErr.message || '';
+              // Check for files that fail to parse
+              const brokenFileMatch = stderr.match(/Error:.*?at\s+(.+\.spec\.[jt]s)/g);
+              if (brokenFileMatch) {
+                logger.warn(`  ${brokenFileMatch.length} file(s) have runtime errors — will be fixed during test iteration`);
+              } else {
+                logger.warn(`  Playwright list-tests check failed: ${stderr.slice(0, 200)}`);
+              }
+            }
+          }
+
+          // Validate .test.js files (unit tests) — quick Node.js require check
+          const testFiles = allGenFiles.filter(f => f.endsWith('.test.js'));
+          if (testFiles.length > 0) {
+            let brokenUnit = 0;
+            for (const tf of testFiles) {
+              const fullPath = path.join(validationTestDir, tf);
+              if (!fs.existsSync(fullPath)) continue;
+              try {
+                const vm = require('vm');
+                const content = fs.readFileSync(fullPath, 'utf-8');
+                new vm.Script(content, { filename: tf });
+              } catch {
+                brokenUnit++;
+              }
+            }
+            if (brokenUnit > 0) {
+              logger.warn(`  ${brokenUnit}/${testFiles.length} unit test file(s) have syntax errors — will be fixed during iteration`);
+            } else {
+              logger.info(`  All ${testFiles.length} unit test file(s) passed syntax validation`);
+            }
+          }
+        }
+      }
+
       // ── Step 7.5: Run Unit Tests (if enabled) ───────────────
       let unitTestResults = null;
       const hasUnitTests = testTypes.some(t => ['unit', 'integration'].includes(t));
@@ -466,6 +528,16 @@ class AgentOrchestrator {
           } else {
             logger.warn(`⚠️ ${unitTestResults.failed} unit test(s) failed`);
           }
+
+          // Log coverage summary
+          if (unitTestResults.coverage) {
+            const cov = unitTestResults.coverage;
+            logger.info(`📈 Coverage: Stmts ${cov.statements}% | Branch ${cov.branches}% | Funcs ${cov.functions}% | Lines ${cov.lines}%`);
+            if (cov.perFile) {
+              const fileCount = Object.keys(cov.perFile).length;
+              logger.info(`   Per-file coverage for ${fileCount} file(s) — see detailed log for breakdown`);
+            }
+          }
         } catch (err) {
           logger.error(`Unit test execution failed: ${err.message}`);
           unitTestResults = {
@@ -475,6 +547,25 @@ class AgentOrchestrator {
             total: 1,
             error: err.message
           };
+        }
+
+        // ── Fallback: If unit test runner completely failed, regenerate as Playwright specs ──
+        if (unitTestResults && unitTestResults.total === 0 && unitTestResults.exitCode !== 0 && !unitTestResults.skippedReason) {
+          logger.warn('⚠️ Unit test runner failed to execute any tests — falling back to Playwright spec generation');
+          try {
+            const fallbackTypes = ['api']; // Generate API tests as Playwright specs instead
+            const fallbackGaps = { api: null }; // Full generation
+            const fallbackGenerated = await this.testGenerator.generateAll(
+              workDir, codeAnalysis, fallbackTypes, techStack, fallbackGaps
+            );
+            const fallbackFiles = Object.values(fallbackGenerated).reduce((sum, g) => sum + (g.files?.length || 0), 0);
+            if (fallbackFiles > 0) {
+              logger.info(`  ✅ Fallback: Generated ${fallbackFiles} Playwright spec(s) to replace failed unit tests`);
+              // These will be picked up by the Playwright test run in Step 9
+            }
+          } catch (fallbackErr) {
+            logger.warn(`  Fallback generation failed: ${fallbackErr.message}`);
+          }
         }
       }
 

@@ -632,9 +632,10 @@ class TestRunner {
         testResults.failures.forEach((failure, index) => {
           lines.push(`FAILURE #${index + 1}`);
           lines.push('-'.repeat(100));
-          lines.push(`Test:     ${failure.testName}`);
-          lines.push(`File:     ${failure.file || 'N/A'}`);
-          lines.push(`Category: ${failure.category || 'unknown'}`);
+          lines.push(`Test:       ${failure.testName}`);
+          lines.push(`File:       ${failure.file || 'N/A'}`);
+          lines.push(`Category:   ${failure.category || 'unknown'}`);
+          lines.push(`Root Cause: ${TestRunner._classifyRootCause(failure)}`);
           lines.push('');
           lines.push('Error Message:');
           lines.push(failure.error || 'No error message');
@@ -738,6 +739,23 @@ class TestRunner {
       logger.warn(`Failed to write detailed test log: ${err.message}`);
     }
   }
+  /**
+   * Classify root cause of a test failure for logs and reports
+   */
+  static _classifyRootCause(failure) {
+    const error = (failure.error || '').toLowerCase();
+    if (error.includes('timeout') || error.includes('waiting for') || error.includes('exceeded')) return 'Timeout — page or element took too long';
+    if (error.includes('econnrefused') || error.includes('enotfound') || error.includes('fetch failed')) return 'Connection error — app not reachable';
+    if (error.includes('404') || error.includes('not found')) return 'Endpoint/page not found (404)';
+    if (error.includes('500') || error.includes('internal server')) return 'Server error (500)';
+    if (error.includes('401') || error.includes('403') || error.includes('unauthorized')) return 'Authentication/authorization error';
+    if (error.includes('expect') || error.includes('assert') || error.includes('tobetruthy')) return 'Assertion failed — expected vs actual mismatch';
+    if (error.includes('locator') || error.includes('selector') || error.includes('getby')) return 'Selector issue — element not found';
+    if (error.includes('syntax') || error.includes('unexpected token') || error.includes('cannot find module')) return 'Code/import error in test file';
+    if (error.includes('cors') || error.includes('access-control')) return 'CORS policy blocking request';
+    return 'Unknown — review error details below';
+  }
+
 }
 
 module.exports = TestRunner;

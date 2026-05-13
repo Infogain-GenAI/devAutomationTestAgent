@@ -81,6 +81,11 @@ class ReportGenerator {
       sections.push(this._buildTestResultsSection(runData.testResults));
     }
 
+    // Unit Test Results with Coverage
+    if (runData.unitTestResults && runData.unitTestResults.total > 0) {
+      sections.push(this._buildUnitTestResultsSection(runData.unitTestResults));
+    }
+
     // Live API Endpoint Validation
     if (runData.liveValidation && runData.liveValidation.totalTested > 0) {
       sections.push(this._buildLiveValidationSection(runData.liveValidation));
@@ -322,7 +327,7 @@ ${this._getQualityRecommendations(qualityScore)}`;
       ? ((testResults.passed / testResults.total) * 100).toFixed(1) 
       : 0;
 
-    return `## Test Results
+    let section = `## Test Results (E2E / API)
 
 ### Summary
 - Total Tests: **${testResults.total}**
@@ -332,8 +337,117 @@ ${this._getQualityRecommendations(qualityScore)}`;
 
 ### Test Execution Details
 ${this._buildTestExecutionTable(testResults)}
+`;
 
-${testResults.failed > 0 ? `### Failed Tests\n\n${this._buildFailedTestsList(testResults)}` : ''}`;
+    if (testResults.failed > 0 && testResults.failures && testResults.failures.length > 0) {
+      section += `\n### Failed Tests with Root Cause\n\n`;
+      section += `| # | Test | File | Root Cause | Error |\n`;
+      section += `|---|------|------|------------|-------|\n`;
+      testResults.failures.slice(0, 20).forEach((failure, idx) => {
+        const rootCause = this._classifyFailureRootCause(failure);
+        const errorMsg = (failure.error || 'Unknown').split('\n')[0].slice(0, 80);
+        section += `| ${idx + 1} | ${failure.testName || failure.test || 'N/A'} | ${failure.file || 'N/A'} | ${rootCause} | ${errorMsg} |\n`;
+      });
+    }
+
+    return section;
+  }
+
+  /**
+   * Build unit test results section with per-file coverage
+   */
+  _buildUnitTestResultsSection(unitTestResults) {
+    const successRate = unitTestResults.total > 0
+      ? ((unitTestResults.passed / unitTestResults.total) * 100).toFixed(1)
+      : 0;
+
+    let section = `## Unit Test Results
+
+### Summary
+- Framework: **${unitTestResults.framework || 'jest'}**
+- Total Tests: **${unitTestResults.total}**
+- Passed: **${unitTestResults.passed}** ✅
+- Failed: **${unitTestResults.failed}** ❌
+- Skipped: **${unitTestResults.skipped || 0}** ⏭️
+- Success Rate: **${successRate}%**
+- Duration: **${((unitTestResults.duration || 0) / 1000).toFixed(2)}s**
+`;
+
+    // Coverage summary
+    if (unitTestResults.coverage) {
+      const cov = unitTestResults.coverage;
+      section += `\n### Code Coverage Summary\n\n`;
+      section += `| Metric | Coverage |\n`;
+      section += `|--------|----------|\n`;
+      section += `| Statements | ${cov.statements}% |\n`;
+      section += `| Branches | ${cov.branches}% |\n`;
+      section += `| Functions | ${cov.functions}% |\n`;
+      section += `| Lines | ${cov.lines}% |\n\n`;
+
+      // Per-file coverage table
+      if (cov.perFile && Object.keys(cov.perFile).length > 0) {
+        section += `### Per-File Coverage\n\n`;
+        section += `| File | Statements | Branches | Functions | Lines |\n`;
+        section += `|------|-----------|----------|-----------|-------|\n`;
+        for (const [file, fc] of Object.entries(cov.perFile)) {
+          const stmtIcon = fc.statements >= 80 ? '✅' : fc.statements >= 50 ? '⚠️' : '❌';
+          section += `| ${file} | ${stmtIcon} ${fc.statements}% | ${fc.branches}% | ${fc.functions}% | ${fc.lines}% |\n`;
+        }
+        section += '\n';
+      }
+    } else {
+      section += `\n> ⚠️ Code coverage data not available. Ensure Jest is configured with \`collectCoverage: true\`.\n\n`;
+    }
+
+    // Failed unit tests with root cause
+    if (unitTestResults.failed > 0 && unitTestResults.failures && unitTestResults.failures.length > 0) {
+      section += `### Failed Unit Tests\n\n`;
+      section += `| # | Test | File | Error |\n`;
+      section += `|---|------|------|-------|\n`;
+      unitTestResults.failures.slice(0, 20).forEach((failure, idx) => {
+        const errorMsg = (failure.error || 'Unknown').split('\n')[0].slice(0, 100);
+        section += `| ${idx + 1} | ${failure.testName || 'N/A'} | ${failure.file || 'N/A'} | ${errorMsg} |\n`;
+      });
+    }
+
+    return section;
+  }
+
+  /**
+   * Classify a test failure into a root cause category
+   */
+  _classifyFailureRootCause(failure) {
+    const error = (failure.error || '').toLowerCase();
+    const stack = (failure.stackTrace || '').toLowerCase();
+
+    if (error.includes('timeout') || error.includes('waiting for') || error.includes('exceeded')) {
+      return '⏱️ Timeout';
+    }
+    if (error.includes('econnrefused') || error.includes('enotfound') || error.includes('fetch failed')) {
+      return '🌐 Connection Error';
+    }
+    if (error.includes('404') || error.includes('not found')) {
+      return '🔍 Endpoint Not Found';
+    }
+    if (error.includes('500') || error.includes('internal server')) {
+      return '💥 Server Error';
+    }
+    if (error.includes('401') || error.includes('403') || error.includes('unauthorized') || error.includes('forbidden')) {
+      return '🔒 Auth Error';
+    }
+    if (error.includes('expect') || error.includes('assert') || error.includes('tobetruthy') || error.includes('tobe(')) {
+      return '❌ Assertion Failed';
+    }
+    if (error.includes('locator') || error.includes('selector') || error.includes('getbytext') || error.includes('getbyrole')) {
+      return '🎯 Selector Issue';
+    }
+    if (error.includes('syntax') || error.includes('unexpected token') || error.includes('cannot find module')) {
+      return '🔧 Code/Import Error';
+    }
+    if (error.includes('cors') || error.includes('access-control')) {
+      return '🚫 CORS Error';
+    }
+    return '❓ Unknown';
   }
 
   /**

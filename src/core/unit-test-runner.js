@@ -350,7 +350,7 @@ class UnitTestRunner {
     return new Promise((resolve, reject) => {
       let args;
       if (framework === 'jest') {
-        args = ['--json', '--forceExit', '--passWithNoTests'];
+        args = ['--json', '--forceExit', '--passWithNoTests', '--coverage'];
         if (configPath) {
           const relConfigPath = path.relative(cwd, configPath);
           args.push('--config', relConfigPath || 'jest.config.js');
@@ -455,16 +455,68 @@ class UnitTestRunner {
               );
           }
 
-          // Extract coverage if available
+          // Extract per-file coverage if available
           if (json.coverageMap) {
-            const totals = Object.values(json.coverageMap).reduce((acc, file) => ({
-              lines: acc.lines + (file.s || {}),
-              statements: acc.statements + (file.f || {}),
-              branches: acc.branches + (file.b || {}),
-              functions: acc.functions + (file.fnMap || {})
-            }), { lines: 0, statements: 0, branches: 0, functions: 0 });
-            
-            results.coverage = totals;
+            const perFile = {};
+            let totalStatements = 0, coveredStatements = 0;
+            let totalBranches = 0, coveredBranches = 0;
+            let totalFunctions = 0, coveredFunctions = 0;
+            let totalLines = 0, coveredLines = 0;
+
+            for (const [filePath, fileData] of Object.entries(json.coverageMap)) {
+              const shortPath = filePath.replace(/^.*?[/\\](src|lib|app|generated-tests)[/\\]/, '$1/');
+              
+              // Statement coverage
+              const stmts = fileData.s || {};
+              const stmtTotal = Object.keys(stmts).length;
+              const stmtCovered = Object.values(stmts).filter(v => v > 0).length;
+              
+              // Function coverage
+              const fns = fileData.f || {};
+              const fnTotal = Object.keys(fns).length;
+              const fnCovered = Object.values(fns).filter(v => v > 0).length;
+              
+              // Branch coverage
+              const brs = fileData.b || {};
+              let brTotal = 0, brCovered = 0;
+              for (const counts of Object.values(brs)) {
+                if (Array.isArray(counts)) {
+                  brTotal += counts.length;
+                  brCovered += counts.filter(v => v > 0).length;
+                }
+              }
+
+              // Line coverage (from statementMap → lines)
+              const stmtMap = fileData.statementMap || {};
+              const lineSet = new Set();
+              const coveredLineSet = new Set();
+              for (const [key, loc] of Object.entries(stmtMap)) {
+                if (loc && loc.start) {
+                  lineSet.add(loc.start.line);
+                  if (stmts[key] > 0) coveredLineSet.add(loc.start.line);
+                }
+              }
+
+              perFile[shortPath] = {
+                statements: stmtTotal > 0 ? parseFloat(((stmtCovered / stmtTotal) * 100).toFixed(1)) : 100,
+                branches: brTotal > 0 ? parseFloat(((brCovered / brTotal) * 100).toFixed(1)) : 100,
+                functions: fnTotal > 0 ? parseFloat(((fnCovered / fnTotal) * 100).toFixed(1)) : 100,
+                lines: lineSet.size > 0 ? parseFloat(((coveredLineSet.size / lineSet.size) * 100).toFixed(1)) : 100
+              };
+
+              totalStatements += stmtTotal; coveredStatements += stmtCovered;
+              totalBranches += brTotal; coveredBranches += brCovered;
+              totalFunctions += fnTotal; coveredFunctions += fnCovered;
+              totalLines += lineSet.size; coveredLines += coveredLineSet.size;
+            }
+
+            results.coverage = {
+              statements: totalStatements > 0 ? parseFloat(((coveredStatements / totalStatements) * 100).toFixed(1)) : 0,
+              branches: totalBranches > 0 ? parseFloat(((coveredBranches / totalBranches) * 100).toFixed(1)) : 0,
+              functions: totalFunctions > 0 ? parseFloat(((coveredFunctions / totalFunctions) * 100).toFixed(1)) : 0,
+              lines: totalLines > 0 ? parseFloat(((coveredLines / totalLines) * 100).toFixed(1)) : 0,
+              perFile
+            };
           }
         } else {
           // Fallback: parse plain text output
@@ -547,11 +599,23 @@ class UnitTestRunner {
     if (results.coverage) {
       lines.push('📈 CODE COVERAGE');
       lines.push('-'.repeat(100));
-      lines.push(`Lines:       ${results.coverage.lines}%`);
       lines.push(`Statements:  ${results.coverage.statements}%`);
       lines.push(`Branches:    ${results.coverage.branches}%`);
       lines.push(`Functions:   ${results.coverage.functions}%`);
+      lines.push(`Lines:       ${results.coverage.lines}%`);
       lines.push('');
+
+      if (results.coverage.perFile && Object.keys(results.coverage.perFile).length > 0) {
+        lines.push('📄 PER-FILE COVERAGE');
+        lines.push('-'.repeat(100));
+        lines.push(`${'File'.padEnd(60)} | Stmts  | Branch | Funcs  | Lines`);
+        lines.push(`${'-'.repeat(60)}-|--------|--------|--------|-------`);
+        for (const [file, cov] of Object.entries(results.coverage.perFile)) {
+          const name = file.length > 58 ? '...' + file.slice(-55) : file;
+          lines.push(`${name.padEnd(60)} | ${String(cov.statements + '%').padEnd(6)} | ${String(cov.branches + '%').padEnd(6)} | ${String(cov.functions + '%').padEnd(6)} | ${cov.lines}%`);
+        }
+        lines.push('');
+      }
     }
 
     if (results.failures && results.failures.length > 0) {
