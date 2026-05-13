@@ -78,7 +78,7 @@ class ReportGenerator {
 
     // Test Results
     if (runData.testResults) {
-      sections.push(this._buildTestResultsSection(runData.testResults));
+      sections.push(this._buildTestResultsSection(runData.testResults, runData.testResultsWorkDir));
     }
 
     // Unit Test Results with Coverage
@@ -322,7 +322,7 @@ ${this._getQualityRecommendations(qualityScore)}`;
   /**
    * Build test results section
    */
-  _buildTestResultsSection(testResults) {
+  _buildTestResultsSection(testResults, workDir) {
     const successRate = testResults.total > 0 
       ? ((testResults.passed / testResults.total) * 100).toFixed(1) 
       : 0;
@@ -333,6 +333,7 @@ ${this._getQualityRecommendations(qualityScore)}`;
 - Total Tests: **${testResults.total}**
 - Passed: **${testResults.passed}** ✅
 - Failed: **${testResults.failed}** ❌
+- Skipped: **${testResults.skipped || 0}** ⏭️
 - Success Rate: **${successRate}%**
 
 ### Test Execution Details
@@ -348,6 +349,19 @@ ${this._buildTestExecutionTable(testResults)}
         const errorMsg = (failure.error || 'Unknown').split('\n')[0].slice(0, 80);
         section += `| ${idx + 1} | ${failure.testName || failure.test || 'N/A'} | ${failure.file || 'N/A'} | ${rootCause} | ${errorMsg} |\n`;
       });
+    }
+
+    // Human interaction tests section
+    const humanTests = this._getHumanInteractionTests(testResults, workDir);
+    if (humanTests.length > 0) {
+      section += `\n### 🏷️ Human Interaction Required (${humanTests.length} test(s) excluded)\n\n`;
+      section += `The following tests were excluded from automated execution and require manual testing:\n\n`;
+      section += `| # | Test | File | Reason |\n`;
+      section += `|---|------|------|--------|\n`;
+      humanTests.forEach((test, idx) => {
+        section += `| ${idx + 1} | ${test.testName} | ${test.file || 'N/A'} | ${test.reason} |\n`;
+      });
+      section += `\n> **To run manually:** \`npx playwright test --grep "@human-interaction" --headed\`\n`;
     }
 
     return section;
@@ -411,6 +425,39 @@ ${this._buildTestExecutionTable(testResults)}
     }
 
     return section;
+  }
+
+  /**
+   * Get human-interaction tests from test results and generated files.
+   * Combines skipped tests with human-interaction reasons from JSON results
+   * AND file-scanned @human-interaction tagged tests (which may be excluded by --grep-invert).
+   */
+  _getHumanInteractionTests(testResults, workDir) {
+    const humanTests = [];
+
+    // Source 1: Skipped tests from JSON with human-interaction skip reasons
+    if (testResults.allTests) {
+      for (const test of testResults.allTests) {
+        if (test.status === 'skipped' && test.skipReason && test.skipReason.includes('HUMAN INTERACTION')) {
+          const reason = test.skipReason.replace(/^⚠️\s*HUMAN INTERACTION REQUIRED:\s*/, '').trim();
+          humanTests.push({ testName: test.testName, file: test.file, reason });
+        }
+      }
+    }
+
+    // Source 2: Scan generated test files for @human-interaction tagged tests
+    // (these may have been excluded entirely by --grep-invert and won't be in JSON)
+    if (workDir) {
+      const TestRunner = require('./test-runner');
+      const fileScanned = TestRunner._findHumanInteractionTests(workDir);
+      for (const ft of fileScanned) {
+        if (!humanTests.some(h => h.testName === ft.testName && h.file === ft.file)) {
+          humanTests.push(ft);
+        }
+      }
+    }
+
+    return humanTests;
   }
 
   /**

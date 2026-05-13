@@ -474,9 +474,35 @@ class IssueFixer {
     const direct = path.join(workDir, file);
     if (fs.existsSync(direct)) return direct;
 
-    // Check in generated-tests
+    // Check in generated-tests (exact match)
     const inTests = path.join(workDir, 'generated-tests', file);
     if (fs.existsSync(inTests)) return inTests;
+
+    // Check in generated-tests/tests/ (AI often returns e2e/foo.spec.js without tests/ prefix)
+    const inTestsSubdir = path.join(workDir, 'generated-tests', 'tests', file);
+    if (fs.existsSync(inTestsSubdir)) return inTestsSubdir;
+
+    // Try to find by filename in generated-tests/ (last resort)
+    const basename = path.basename(file);
+    const genTestDir = path.join(workDir, 'generated-tests');
+    if (fs.existsSync(genTestDir)) {
+      const findInDir = (dir) => {
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isFile() && entry.name === basename) return fullPath;
+            if (entry.isDirectory() && entry.name !== 'node_modules') {
+              const found = findInDir(fullPath);
+              if (found) return found;
+            }
+          }
+        } catch { /* ignore */ }
+        return null;
+      };
+      const found = findInDir(genTestDir);
+      if (found) return found;
+    }
 
     return direct;
   }

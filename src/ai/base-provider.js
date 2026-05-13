@@ -96,6 +96,25 @@ CRITICAL SYNTAX RULES (Playwright-specific):
 - For API tests, use: test('name', async ({ request }) => { ... })
 - For E2E tests, use: test('name', async ({ page }) => { ... })
 - Use CommonJS require() syntax, NOT ES module import/export
+- NEVER use import/export syntax — this is a CommonJS project
+
+VALID ASSERTION PATTERNS (use ONLY these):
+- expect(response.status()).toBe(200);
+- const json = await response.json(); expect(json).toEqual({ key: 'value' });
+- const json = await response.json(); expect(json).toMatchObject({ key: 'value' });
+- expect(json).toHaveProperty('key', 'value');
+- expect(Array.isArray(json.items)).toBe(true);
+- expect(json.length).toBeGreaterThan(0);
+- NEVER use toHaveJSON() — it does NOT exist in Playwright
+- NEVER use toHaveBody() — it does NOT exist in Playwright
+- NEVER use toHaveStatus() — it does NOT exist in Playwright
+- For response body assertions, ALWAYS do: const body = await response.json(); then assert on body
+
+HUMAN INTERACTION TAGGING:
+- If a test requires real human interaction (CAPTCHA, OAuth popup, file upload dialog, 2FA, physical device), add this annotation:
+  test('name', { tag: '@human-interaction' }, async ({ page }) => { test.skip(true, 'Requires human interaction'); });
+- Pure API tests (using { request }) NEVER need human interaction tagging
+- Tests using { page } that only read/navigate (no login, no CAPTCHA) do NOT need tagging
 
 Additional rules:
 - Use descriptive test names
@@ -103,7 +122,6 @@ Additional rules:
 - Add proper waits (waitForSelector, waitForResponse, etc.)
 - Include setup/teardown in test.beforeEach/test.afterEach
 - Handle authentication flows properly
-- Add meaningful assertions
 - Group related tests in test.describe blocks
 Return ONLY valid JavaScript/TypeScript code, no markdown.`,
 

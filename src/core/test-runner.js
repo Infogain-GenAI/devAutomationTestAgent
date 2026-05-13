@@ -68,6 +68,13 @@ class TestRunner {
       args.push('--grep', config.grep);
     }
 
+    // Exclude human-interaction tagged tests from automated runs
+    // These tests have test.skip(true, 'HUMAN INTERACTION REQUIRED: ...')
+    // and/or { tag: '@human-interaction' } — grep-invert ensures they don't run
+    if (!config.includeHumanTests) {
+      args.push('--grep-invert', '@human-interaction');
+    }
+
     return new Promise((resolve, reject) => {
       let stdout = '';
       let stderr = '';
@@ -427,7 +434,8 @@ class TestRunner {
               status: result.status,
               duration: result.duration || 0,
               error: null,
-              stackTrace: null
+              stackTrace: null,
+              skipReason: null
             };
 
             totalDuration += testInfo.duration;
@@ -437,6 +445,12 @@ class TestRunner {
               testInfo.status = 'passed';
             } else if (result.status === 'skipped') {
               skipped++;
+              // Extract skip reason from annotations (test.skip(true, 'reason'))
+              const annotations = test.annotations || spec.annotations || [];
+              const skipAnnotation = annotations.find(a => a.type === 'skip');
+              if (skipAnnotation && skipAnnotation.description) {
+                testInfo.skipReason = skipAnnotation.description;
+              }
             } else {
               failed++;
               testInfo.status = 'failed';
@@ -484,6 +498,48 @@ class TestRunner {
       failures,
       allTests
     };
+  }
+
+  /**
+   * Scan generated test files for @human-interaction tagged tests.
+   * Returns array of { testName, file, reason } for tests excluded from automation.
+   * This works even when --grep-invert removes them from JSON output.
+   */
+  static _findHumanInteractionTests(workDir) {
+    const testDir = path.join(workDir, 'generated-tests', 'tests');
+    const results = [];
+
+    if (!fs.existsSync(testDir)) return results;
+
+    function scanDir(dir) {
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory() && entry.name !== 'node_modules') {
+          scanDir(fullPath);
+        } else if (entry.isFile() && (entry.name.endsWith('.spec.js') || entry.name.endsWith('.spec.ts'))) {
+          try {
+            const content = fs.readFileSync(fullPath, 'utf-8');
+            // Find all tests with @human-interaction tag
+            const tagRegex = /test\s*\(\s*(['"`])(.+?)\1\s*,\s*\{\s*tag:\s*'@human-interaction'\s*\}/g;
+            let match;
+            while ((match = tagRegex.exec(content)) !== null) {
+              const testName = match[2];
+              // Extract the skip reason from the test body
+              const afterMatch = content.slice(match.index, match.index + 500);
+              const reasonMatch = afterMatch.match(/HUMAN INTERACTION REQUIRED:\s*([^']+?)'/);
+              const reason = reasonMatch ? reasonMatch[1].trim() : 'Requires human interaction';
+              const relFile = path.relative(path.join(workDir, 'generated-tests'), fullPath).replace(/\\/g, '/');
+              results.push({ testName, file: relFile, reason });
+            }
+          } catch { /* skip unreadable files */ }
+        }
+      }
+    }
+
+    scanDir(testDir);
+    return results;
   }
 
   /**
@@ -596,6 +652,39 @@ class TestRunner {
         lines.push(`❌ STATUS: ${testResults.failed} TEST(S) FAILED`);
       }
       lines.push('');
+      
+      // Human interaction tests — scan generated files for @human-interaction tagged tests
+      const humanInteractionTests = TestRunner._findHumanInteractionTests(workDir);
+      // Also include any skipped tests from results that have human-interaction skip reasons
+      const skippedHumanTests = (testResults.allTests || []).filter(
+        t => t.status === 'skipped' && t.skipReason && t.skipReason.includes('HUMAN INTERACTION')
+      );
+      
+      // Merge both sources (file-scanned + JSON-reported), deduplicate by test name
+      const allHumanTests = [...humanInteractionTests];
+      for (const st of skippedHumanTests) {
+        if (!allHumanTests.some(h => h.testName === st.testName)) {
+          allHumanTests.push({ testName: st.testName, file: st.file, reason: st.skipReason });
+        }
+      }
+      
+      if (allHumanTests.length > 0) {
+        lines.push('═'.repeat(100));
+        lines.push('🏷️  HUMAN INTERACTION REQUIRED (Excluded from automated run)');
+        lines.push('═'.repeat(100));
+        lines.push('');
+        lines.push('The following tests require manual execution with human supervision:');
+        lines.push('');
+        allHumanTests.forEach((test, index) => {
+          lines.push(`  ${index + 1}. ⏭️ ${test.testName}`);
+          lines.push(`     File:   ${test.file || 'N/A'}`);
+          lines.push(`     Reason: ${test.reason}`);
+          lines.push('');
+        });
+        lines.push('To run these tests manually:');
+        lines.push('  npx playwright test --grep "@human-interaction" --headed');
+        lines.push('');
+      }
       
       // Detailed test results
       if (testResults.allTests && testResults.allTests.length > 0) {

@@ -407,13 +407,13 @@ class TestGenerator {
         : 'http://localhost:3000';
 
     const testDirs = [];
-    if (testTypes.includes('e2e')) testDirs.push('**/e2e/**/*.spec.js');
-    if (testTypes.includes('api')) testDirs.push('**/api/**/*.spec.js');
-    if (testTypes.includes('visual')) testDirs.push('**/visual/**/*.spec.js');
-    if (testTypes.includes('accessibility')) testDirs.push('**/accessibility/**/*.spec.js');
-    if (testTypes.includes('performance')) testDirs.push('**/performance/**/*.spec.js');
+    if (testTypes.includes('e2e')) testDirs.push('**/e2e/**/*.spec.{js,ts}');
+    if (testTypes.includes('api')) testDirs.push('**/api/**/*.spec.{js,ts}');
+    if (testTypes.includes('visual')) testDirs.push('**/visual/**/*.spec.{js,ts}');
+    if (testTypes.includes('accessibility')) testDirs.push('**/accessibility/**/*.spec.{js,ts}');
+    if (testTypes.includes('performance')) testDirs.push('**/performance/**/*.spec.{js,ts}');
     // Catch-all for any spec files
-    testDirs.push('**/*.spec.js');
+    testDirs.push('**/*.spec.{js,ts}');
 
     const config = `// @ts-check
 const { defineConfig, devices } = require('@playwright/test');
@@ -492,18 +492,24 @@ module.exports = {
    * Removes files that cannot be fixed to prevent Playwright from choking on parse errors.
    */
   async _validateAndFixSyntax(outputDir, writtenFiles) {
-    const jsFiles = writtenFiles.filter(f => f.endsWith('.js') || f.endsWith('.mjs'));
+    const jsFiles = writtenFiles.filter(f => f.endsWith('.js') || f.endsWith('.mjs') || f.endsWith('.ts'));
     if (jsFiles.length === 0) return;
 
     // Pre-pass: fix corrupted require/import patterns before syntax check
     this._fixPlaywrightRequires(outputDir, jsFiles);
+    this._fixESMImports(outputDir, jsFiles);
+    this._fixPlaywrightAssertions(outputDir, jsFiles);
     this._fixCommonTestIssues(outputDir, jsFiles);
+    this._markHumanInteractionTests(outputDir, jsFiles);
 
     const broken = [];
 
     for (const relPath of jsFiles) {
       const fullPath = path.join(outputDir, relPath);
       if (!fs.existsSync(fullPath)) continue;
+
+      // Skip vm.Script syntax check for TypeScript files (vm.Script only parses JS)
+      if (relPath.endsWith('.ts')) continue;
 
       const content = fs.readFileSync(fullPath, 'utf-8');
       const error = this._checkSyntax(content, relPath);
@@ -664,6 +670,107 @@ module.exports = {
   }
 
   /**
+   * Detect tests that require human interaction (CAPTCHA, OAuth popups, file upload dialogs,
+   * 2FA prompts, etc.) and mark them with test.skip() so they don't fail in automated runs.
+   * Also detects tests that use browser page interactions in a way that likely needs a real
+   * browser session with human supervision.
+   */
+  _markHumanInteractionTests(outputDir, jsFiles) {
+    // Patterns that indicate human interaction is required
+    const humanInteractionPatterns = [
+      // CAPTCHA/reCAPTCHA
+      { regex: /captcha|recaptcha|hcaptcha/i, reason: 'CAPTCHA verification required' },
+      // OAuth popups / social login
+      { regex: /oauth|social.login|google.sign.?in|facebook.login|github.login|sso.redirect/i, reason: 'OAuth/SSO flow requires human interaction' },
+      // File upload dialogs (native OS dialog)
+      { regex: /filechooser|setInputFiles|input.*type.*file.*click/i, reason: 'File upload dialog requires human interaction' },
+      // 2FA / MFA
+      { regex: /two.?factor|2fa|mfa|authenticator|otp.input|verification.code/i, reason: 'Two-factor authentication requires human interaction' },
+      // Payment flows
+      { regex: /stripe|paypal|payment.modal|credit.card.iframe|checkout.frame/i, reason: 'Payment flow requires human interaction' },
+      // Native browser dialogs that can't be automated reliably
+      { regex: /window\.confirm|window\.prompt|alert\s*\(/i, reason: 'Native browser dialog requires human interaction' },
+      // Download prompts
+      { regex: /download\.suggestedFilename|waitForEvent\s*\(\s*['"]download['"]/i, reason: 'Download flow may require human interaction' },
+    ];
+
+    let totalMarked = 0;
+
+    for (const relPath of jsFiles) {
+      if (!relPath.endsWith('.spec.js') && !relPath.endsWith('.spec.ts')) continue;
+      const fullPath = path.join(outputDir, relPath);
+      if (!fs.existsSync(fullPath)) continue;
+
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      let modified = false;
+      let markedInFile = 0;
+
+      // Check each test block for human interaction patterns
+      // Match: test('name', async (...) => {
+      // or:    test('name', { tag: ... }, async (...) => {
+      const testBlockRegex = /^(\s*)(test\s*\(\s*(['"`])(.+?)\3\s*,\s*)(async\s*\(\s*\{[^}]*\}\s*\)\s*=>\s*\{)/gm;
+      
+      let newContent = content;
+      const tests = [...content.matchAll(testBlockRegex)];
+      
+      for (const match of tests) {
+        const indent = match[1];
+        const testPrefix = match[2];
+        const quote = match[3];
+        const testName = match[4];
+        const asyncPart = match[5];
+        const fullMatch = match[0];
+        
+        // Find the actual test body by tracking brace depth from the opening {
+        const startIdx = match.index + fullMatch.length;
+        let depth = 1;
+        let bodyEnd = startIdx;
+        for (let i = startIdx; i < content.length && depth > 0; i++) {
+          const ch = content[i];
+          if (ch === '{') depth++;
+          else if (ch === '}') depth--;
+          if (depth === 0) { bodyEnd = i; break; }
+        }
+        const bodySlice = content.slice(startIdx, bodyEnd);
+        
+        // Check if any human interaction pattern matches in this test's name or body
+        let requiresHuman = null;
+        for (const pattern of humanInteractionPatterns) {
+          if (pattern.regex.test(testName) || pattern.regex.test(bodySlice)) {
+            requiresHuman = pattern.reason;
+            break;
+          }
+        }
+        
+        if (requiresHuman) {
+          // Already has skip or tag? Don't double-mark
+          if (bodySlice.includes('test.skip(') || fullMatch.includes('@human-interaction')) continue;
+          
+          // Insert { tag: '@human-interaction' } into the test signature AND test.skip() in the body
+          // From: test('name', async ({ page }) => {
+          // To:   test('name', { tag: '@human-interaction' }, async ({ page }) => {
+          //         test.skip(true, '...');
+          const skipLine = `\n${indent}  test.skip(true, '⚠️ HUMAN INTERACTION REQUIRED: ${requiresHuman}');`;
+          const replacement = `${indent}${testPrefix}{ tag: '@human-interaction' }, ${asyncPart}${skipLine}`;
+          newContent = newContent.replace(fullMatch, replacement);
+          modified = true;
+          markedInFile++;
+        }
+      }
+      
+      if (modified) {
+        fs.writeFileSync(fullPath, newContent, 'utf-8');
+        totalMarked += markedInFile;
+        logger.info(`   🏷️  Marked ${markedInFile} human-interaction test(s) as skipped in ${relPath}`);
+      }
+    }
+
+    if (totalMarked > 0) {
+      logger.info(`🏷️  Total: ${totalMarked} test(s) marked as requiring human interaction (auto-skipped)`);
+    }
+  }
+
+  /**
    * Fix corrupted require/import lines in generated Playwright test files.
    * AI sometimes generates garbage like:
    *   onPostExecute({ test, expect } = require('@playwright/test'));
@@ -719,6 +826,111 @@ module.exports = {
 
       if (modified) {
         fs.writeFileSync(fullPath, lines.join('\n'), 'utf-8');
+      }
+    }
+  }
+
+  /**
+   * Convert ESM import/export to CommonJS require in spec files.
+   * AI sometimes generates: import { test, expect } from '@playwright/test'
+   * instead of:              const { test, expect } = require('@playwright/test');
+   */
+  _fixESMImports(outputDir, jsFiles) {
+    // Match: import { ... } from '...'; or import ... from '...';
+    const esmImportDefault = /^\s*import\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/;
+    const esmImportNamed = /^\s*import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/;
+    const esmImportAll = /^\s*import\s+\*\s+as\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?\s*$/;
+
+    for (const relPath of jsFiles) {
+      if (!relPath.endsWith('.spec.js') && !relPath.endsWith('.spec.ts')) continue;
+      const fullPath = path.join(outputDir, relPath);
+      if (!fs.existsSync(fullPath)) continue;
+
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      const lines = content.split('\n');
+      let modified = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        let match = trimmed.match(esmImportNamed);
+        if (match) {
+          lines[i] = `const { ${match[1].trim()} } = require('${match[2]}');`;
+          logger.warn(`   Fixed ESM import in ${relPath} line ${i + 1}`);
+          modified = true;
+          continue;
+        }
+
+        match = trimmed.match(esmImportDefault);
+        if (match) {
+          lines[i] = `const ${match[1]} = require('${match[2]}');`;
+          logger.warn(`   Fixed ESM default import in ${relPath} line ${i + 1}`);
+          modified = true;
+          continue;
+        }
+
+        match = trimmed.match(esmImportAll);
+        if (match) {
+          lines[i] = `const ${match[1]} = require('${match[2]}');`;
+          logger.warn(`   Fixed ESM wildcard import in ${relPath} line ${i + 1}`);
+          modified = true;
+          continue;
+        }
+      }
+
+      if (modified) {
+        fs.writeFileSync(fullPath, lines.join('\n'), 'utf-8');
+      }
+    }
+  }
+
+  /**
+   * Fix invalid Playwright assertion methods.
+   * AI frequently generates toHaveJSON(), toHaveBody(), toHaveStatus() which do NOT exist.
+   * Converts them to valid patterns:
+   *   await expect(response).toHaveJSON({...}) → const _body = await response.json(); expect(_body).toEqual({...})
+   *   await expect(response).toHaveStatus(200) → expect(response.status()).toBe(200)
+   */
+  _fixPlaywrightAssertions(outputDir, jsFiles) {
+    for (const relPath of jsFiles) {
+      if (!relPath.endsWith('.spec.js') && !relPath.endsWith('.spec.ts')) continue;
+      const fullPath = path.join(outputDir, relPath);
+      if (!fs.existsSync(fullPath)) continue;
+
+      let content = fs.readFileSync(fullPath, 'utf-8');
+      let modified = false;
+
+      // Fix: await expect(response).toHaveJSON({...})
+      // → const _bodyN = await response.json(); expect(_bodyN).toEqual({...})
+      let bodyCounter = 0;
+      const toHaveJSONRegex = /await\s+expect\s*\(\s*(\w+)\s*\)\.toHaveJSON\s*\(([\s\S]*?)\)\s*;/g;
+      content = content.replace(toHaveJSONRegex, (match, varName, args) => {
+        modified = true;
+        bodyCounter++;
+        const bodyVar = `_body${bodyCounter}`;
+        return `const ${bodyVar} = await ${varName}.json(); expect(${bodyVar}).toEqual(${args});`;
+      });
+
+      // Fix: await expect(response).toHaveBody({...})
+      const toHaveBodyRegex = /await\s+expect\s*\(\s*(\w+)\s*\)\.toHaveBody\s*\(([\s\S]*?)\)\s*;/g;
+      content = content.replace(toHaveBodyRegex, (match, varName, args) => {
+        modified = true;
+        bodyCounter++;
+        const bodyVar = `_body${bodyCounter}`;
+        return `const ${bodyVar} = await ${varName}.json(); expect(${bodyVar}).toEqual(${args});`;
+      });
+
+      // Fix: expect(response).toHaveStatus(200) → expect(response.status()).toBe(200)
+      const toHaveStatusRegex = /(?:await\s+)?expect\s*\(\s*(\w+)\s*\)\.toHaveStatus\s*\(\s*(\d+)\s*\)\s*;/g;
+      content = content.replace(toHaveStatusRegex, (match, varName, code) => {
+        modified = true;
+        return `expect(${varName}.status()).toBe(${code});`;
+      });
+
+      if (modified) {
+        fs.writeFileSync(fullPath, content, 'utf-8');
+        logger.warn(`   Fixed invalid Playwright assertions in ${relPath}`);
       }
     }
   }

@@ -280,7 +280,7 @@ class AgentOrchestrator {
                 cwd: validationTestDir,
                 timeout: 60000,
                 encoding: 'utf-8',
-                env: { ...process.env, CI: 'true', APP_URL: appUrl || 'http://localhost:3000' }
+                env: { ...process.env, CI: 'true', APP_URL: process.env.APP_URL || 'http://localhost:3000' }
               });
               const testCount = (listResult.match(/\d+ test/)?.[0]) || 'unknown';
               logger.info(`  Playwright validation: ${testCount}(s) found across ${specFiles.length} file(s)`);
@@ -523,10 +523,14 @@ class AgentOrchestrator {
           // Write results to log
           this.unitTestRunner.writeResultsToLog(unitTestResults, workDir);
           
-          if (unitTestResults.failed === 0) {
+          if (unitTestResults.total === 0 && unitTestResults.exitCode !== 0) {
+            logger.warn(`⚠️ Unit test runner exited with code ${unitTestResults.exitCode} but ran 0 tests — possible OOM or config issue`);
+          } else if (unitTestResults.total === 0) {
+            logger.info('ℹ️ No unit tests executed (0 test files matched)');
+          } else if (unitTestResults.failed === 0) {
             logger.info(`✅ All ${unitTestResults.passed} unit tests passed!`);
           } else {
-            logger.warn(`⚠️ ${unitTestResults.failed} unit test(s) failed`);
+            logger.warn(`⚠️ ${unitTestResults.failed}/${unitTestResults.total} unit test(s) failed`);
           }
 
           // Log coverage summary
@@ -550,18 +554,19 @@ class AgentOrchestrator {
         }
 
         // ── Fallback: If unit test runner completely failed, regenerate as Playwright specs ──
-        if (unitTestResults && unitTestResults.total === 0 && unitTestResults.exitCode !== 0 && !unitTestResults.skippedReason) {
-          logger.warn('⚠️ Unit test runner failed to execute any tests — falling back to Playwright spec generation');
+        if (unitTestResults && unitTestResults.total === 0 && 
+            (unitTestResults.exitCode !== 0 || unitTestResults.skippedReason) === false) {
+          // 0 tests ran and no skip reason = runner failed silently
+          logger.warn('⚠️ Unit test runner ran 0 tests — falling back to Playwright spec generation');
           try {
-            const fallbackTypes = ['api']; // Generate API tests as Playwright specs instead
-            const fallbackGaps = { api: null }; // Full generation
+            const fallbackTypes = ['api'];
+            const fallbackGaps = { api: null };
             const fallbackGenerated = await this.testGenerator.generateAll(
               workDir, codeAnalysis, fallbackTypes, techStack, fallbackGaps
             );
             const fallbackFiles = Object.values(fallbackGenerated).reduce((sum, g) => sum + (g.files?.length || 0), 0);
             if (fallbackFiles > 0) {
               logger.info(`  ✅ Fallback: Generated ${fallbackFiles} Playwright spec(s) to replace failed unit tests`);
-              // These will be picked up by the Playwright test run in Step 9
             }
           } catch (fallbackErr) {
             logger.warn(`  Fallback generation failed: ${fallbackErr.message}`);
@@ -722,7 +727,12 @@ class AgentOrchestrator {
         }
 
         if (fixResult.noFixes || fixResult.applied.length === 0) {
-          logger.info('No fixes could be applied — skipping re-run');
+          if (fixResult.reverted && fixResult.reverted.length > 0) {
+            logger.warn(`All ${fixResult.reverted.length} fix(es) reverted (path issues?) — continuing to next iteration`);
+            this.iterationHistory.push(iterationRecord);
+            continue;
+          }
+          logger.info('No fixes could be generated — skipping remaining iterations');
           this.iterationHistory.push(iterationRecord);
           break;
         }
@@ -826,6 +836,7 @@ class AgentOrchestrator {
           backendValidation,
           bestPracticesValidation,
           testResults: lastTestResult,
+          testResultsWorkDir: workDir,
           unitTestResults: unitTestResults ? {
             framework: unitTestResults.framework,
             total: unitTestResults.total,

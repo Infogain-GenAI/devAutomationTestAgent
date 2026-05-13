@@ -241,6 +241,14 @@ class UnitTestRunner {
     // First attempt: use project's jest config
     let results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
 
+    // Handle OOM (exit code 134/137 = SIGKILL/SIGABRT) — retry without coverage
+    if (results.exitCode === 134 || results.exitCode === 137) {
+      logger.warn(`Jest was killed (exit code ${results.exitCode}) — likely OOM. Retrying without --coverage...`);
+      process.env.JEST_COVERAGE = 'false';
+      results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+      delete process.env.JEST_COVERAGE;
+    }
+
     // If project config failed with 0 tests, determine whether it's a config issue or broken spec files
     if (jestConfigPath && results.exitCode !== 0 && results.total === 0 && framework === 'jest') {
       // Check if the error is a missing jest-environment-jsdom (install it and retry)
@@ -350,7 +358,12 @@ class UnitTestRunner {
     return new Promise((resolve, reject) => {
       let args;
       if (framework === 'jest') {
-        args = ['--json', '--forceExit', '--passWithNoTests', '--coverage'];
+        args = ['--json', '--forceExit', '--passWithNoTests'];
+        // Only enable coverage if explicitly requested or in CI with small test suites
+        // Coverage can cause OOM (exit code 134) on large projects
+        if (process.env.JEST_COVERAGE !== 'false') {
+          args.push('--coverage');
+        }
         if (configPath) {
           const relConfigPath = path.relative(cwd, configPath);
           args.push('--config', relConfigPath || 'jest.config.js');
