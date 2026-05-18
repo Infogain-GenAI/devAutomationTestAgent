@@ -38,4 +38,28 @@ function createProvider(config) {
   }
 }
 
-module.exports = { createProvider };
+/**
+ * Create a dedicated Claude provider for code generation tasks.
+ * Returns null if CODE_GENERATION_CLAUDE_API_KEY is not configured.
+ * When available, this provider is used for: test generation, fix generation, failure analysis.
+ * @param {object} config - Full application config
+ * @returns {ClaudeProvider|null}
+ */
+function createCodeGenProvider(config) {
+  const codeGenConfig = config.ai.codeGeneration;
+
+  if (!codeGenConfig || !codeGenConfig.useClaudeForCodeGen || !codeGenConfig.claudeApiKey) {
+    return null;
+  }
+
+  const ClaudeProvider = require('./claude-provider');
+  const providerConfig = {
+    apiKey: codeGenConfig.claudeApiKey,
+    model: codeGenConfig.claudeModel || 'claude-sonnet-4-20250514'
+  };
+
+  logger.info(`Creating dedicated Claude code-generation provider (model: ${providerConfig.model})`);
+  return new ClaudeProvider(providerConfig);
+}
+
+module.exports = { createProvider, createCodeGenProvider };

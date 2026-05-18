@@ -11,6 +11,9 @@ const parseIntSafe = (value, defaultValue) => {
 const defaults = {
   agent: {
     maxIterations: parseIntSafe(process.env.MAX_ITERATIONS, 3),
+    subAgentMaxIterations: parseIntSafe(process.env.SUB_AGENT_MAX_ITERATIONS, 5),
+    coverageThreshold: parseIntSafe(process.env.COVERAGE_THRESHOLD, 95),
+    runMode: process.env.RUN_MODE || 'full', // full | generation | validation | execution
     timeoutMinutes: parseIntSafe(process.env.AGENT_TIMEOUT_MINUTES, 30),
     workDir: process.env.AGENT_WORK_DIR || path.join(process.cwd(), 'workspace'),
     branch: process.env.REPO_BRANCH || 'main',
@@ -20,6 +23,7 @@ const defaults = {
     enableBestPracticesCheck: process.env.ENABLE_BEST_PRACTICES_CHECK !== 'false',
     enableEndpointValidation: process.env.ENABLE_ENDPOINT_VALIDATION !== 'false',
     generateAnalysisReport: process.env.GENERATE_ANALYSIS_REPORT !== 'false',
+    skipPR: process.env.SKIP_PR === 'true',
     reportOutputDir: process.env.REPORT_OUTPUT_DIR || 'reports'
   },
   github: {
@@ -31,6 +35,11 @@ const defaults = {
   },
   ai: {
     provider: process.env.AI_PROVIDER || 'openai',
+    codeGeneration: {
+      useClaudeForCodeGen: !!(process.env.CODE_GENERATION_CLAUDE_API_KEY),
+      claudeApiKey: process.env.CODE_GENERATION_CLAUDE_API_KEY || null,
+      claudeModel: process.env.CODE_GENERATION_CLAUDE_MODEL || 'claude-sonnet-4-20250514'
+    },
     claude: {
       apiKey: process.env.CLAUDE_API_KEY || process.env.AI_API_KEY,
       model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514'

@@ -5,6 +5,9 @@ const Joi = require('joi');
 const configSchema = Joi.object({
   agent: Joi.object({
     maxIterations: Joi.number().integer().min(1).max(10).default(3),
+    subAgentMaxIterations: Joi.number().integer().min(1).max(15).default(5),
+    coverageThreshold: Joi.number().integer().min(1).max(100).default(95),
+    runMode: Joi.string().valid('full', 'generation', 'validation', 'execution').default('full'),
     timeoutMinutes: Joi.number().integer().min(5).max(120).default(30),
     workDir: Joi.string().default('./workspace'),
     branch: Joi.string().default('main'),
@@ -14,6 +17,7 @@ const configSchema = Joi.object({
     enableBestPracticesCheck: Joi.boolean().default(true),
     enableEndpointValidation: Joi.boolean().default(true),
     generateAnalysisReport: Joi.boolean().default(true),
+    skipPR: Joi.boolean().default(false),
     reportOutputDir: Joi.string().default('reports')
   }).default(),
 
@@ -43,6 +47,11 @@ const configSchema = Joi.object({
 
   ai: Joi.object({
     provider: Joi.string().valid('claude', 'openai', 'gemini').default('openai'),
+    codeGeneration: Joi.object({
+      useClaudeForCodeGen: Joi.boolean().default(false),
+      claudeApiKey: Joi.string().allow(null, '').default(null),
+      claudeModel: Joi.string().default('claude-sonnet-4-20250514')
+    }).default(),
     claude: Joi.object({
       apiKey: Joi.string().allow(null, ''),
       model: Joi.string().default('claude-sonnet-4-20250514')

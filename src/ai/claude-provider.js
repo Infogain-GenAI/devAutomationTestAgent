@@ -25,6 +25,7 @@ class ClaudeProvider extends BaseAIProvider {
       messages: [{ role: 'user', content: this._truncateContent(userMessage, 180000) }]
     });
 
+    this._recordTokenUsage('analyzeCode', response.usage);
     const text = response.content[0]?.text || '';
     return this._parseJsonResponse(text);
   }
@@ -123,6 +124,7 @@ class ClaudeProvider extends BaseAIProvider {
       messages: [{ role: 'user', content: this._truncateContent(userMessage, 180000) }]
     });
 
+    this._recordTokenUsage('generateTests', response.usage);
     const text = response.content[0]?.text || '';
     return this._parseJsonResponse(text);
   }
@@ -140,6 +142,7 @@ class ClaudeProvider extends BaseAIProvider {
       messages: [{ role: 'user', content: this._truncateContent(userMessage, 180000) }]
     });
 
+    this._recordTokenUsage('analyzeFailures', response.usage);
     const text = response.content[0]?.text || '';
     return this._parseJsonResponse(text);
   }
@@ -157,6 +160,7 @@ class ClaudeProvider extends BaseAIProvider {
       messages: [{ role: 'user', content: this._truncateContent(userMessage, 180000) }]
     });
 
+    this._recordTokenUsage('generateFix', response.usage);
     const text = response.content[0]?.text || '';
     return this._parseJsonResponse(text);
   }

@@ -23,6 +23,7 @@ class GeminiProvider extends BaseAIProvider {
     });
 
     const result = await model.generateContent(this._truncateContent(userMessage, 900000));
+    this._recordTokenUsage('analyzeCode', this._extractGeminiUsage(result));
     const text = result.response.text();
     return this._parseJsonResponse(text);
   }
@@ -119,6 +120,7 @@ class GeminiProvider extends BaseAIProvider {
     });
 
     const result = await model.generateContent(this._truncateContent(userMessage, 900000));
+    this._recordTokenUsage('generateTests', this._extractGeminiUsage(result));
     const text = result.response.text();
     return this._parseJsonResponse(text);
   }
@@ -135,6 +137,7 @@ class GeminiProvider extends BaseAIProvider {
     });
 
     const result = await model.generateContent(this._truncateContent(userMessage, 900000));
+    this._recordTokenUsage('analyzeFailures', this._extractGeminiUsage(result));
     const text = result.response.text();
     return this._parseJsonResponse(text);
   }
@@ -151,8 +154,21 @@ class GeminiProvider extends BaseAIProvider {
     });
 
     const result = await model.generateContent(this._truncateContent(userMessage, 900000));
+    this._recordTokenUsage('generateFix', this._extractGeminiUsage(result));
     const text = result.response.text();
     return this._parseJsonResponse(text);
+  }
+
+  /**
+   * Extract token usage from Gemini response in normalized format.
+   */
+  _extractGeminiUsage(result) {
+    const meta = result.response?.usageMetadata;
+    if (!meta) return null;
+    return {
+      input_tokens: meta.promptTokenCount || 0,
+      output_tokens: meta.candidatesTokenCount || 0
+    };
   }
 
   _truncateContent(content, maxChars) {

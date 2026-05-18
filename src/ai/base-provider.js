@@ -10,6 +10,58 @@ class BaseAIProvider {
       throw new Error('BaseAIProvider is abstract and cannot be instantiated directly');
     }
     this.config = config;
+
+    // Token usage tracking
+    this.tokenUsage = {
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalTokens: 0,
+      calls: 0,
+      breakdown: [] // { method, inputTokens, outputTokens, timestamp }
+    };
+  }
+
+  /**
+   * Record token usage from an API response.
+   * @param {string} method - The method that made the call (e.g., 'generateTests')
+   * @param {object} usage - { inputTokens, outputTokens }
+   */
+  _recordTokenUsage(method, usage) {
+    if (!usage) return;
+    const input = usage.inputTokens || usage.input_tokens || usage.prompt_tokens || 0;
+    const output = usage.outputTokens || usage.output_tokens || usage.completion_tokens || 0;
+
+    this.tokenUsage.totalInputTokens += input;
+    this.tokenUsage.totalOutputTokens += output;
+    this.tokenUsage.totalTokens += (input + output);
+    this.tokenUsage.calls += 1;
+    this.tokenUsage.breakdown.push({
+      method,
+      inputTokens: input,
+      outputTokens: output,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  /**
+   * Get aggregated token usage stats.
+   * @returns {object} - { totalInputTokens, totalOutputTokens, totalTokens, calls, breakdown }
+   */
+  getTokenUsage() {
+    return { ...this.tokenUsage };
+  }
+
+  /**
+   * Reset token usage counters.
+   */
+  resetTokenUsage() {
+    this.tokenUsage = {
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalTokens: 0,
+      calls: 0,
+      breakdown: []
+    };
   }
 
   /**

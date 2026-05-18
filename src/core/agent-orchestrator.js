@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
 const logger = require('../utils/logger');
-const { createProvider } = require('../ai/provider-factory');
+const { createProvider, createCodeGenProvider } = require('../ai/provider-factory');
 const RepoManager = require('./repo-manager');
 const DependencyInstaller = require('./dependency-installer');
 const EnvHandler = require('./env-handler');
@@ -20,6 +20,9 @@ const IssueFixer = require('./issue-fixer');
 const BackendValidator = require('./backend-validator');
 const ReportGenerator = require('./report-generator');
 
+// Sub-agents
+const { GenerationAgent, ValidationAgent, ExecutionAgent } = require('../agents');
+
 class AgentOrchestrator {
   constructor(config) {
     this.config = config;
@@ -30,16 +33,45 @@ class AgentOrchestrator {
 
     // Core components
     this.aiProvider = createProvider(config);
+    this.codeGenProvider = createCodeGenProvider(config); // Dedicated Claude for code generation (optional)
+    const codeProvider = this.codeGenProvider || this.aiProvider; // Use code-gen Claude if available
+
     this.repoManager = new RepoManager(config);
     this.codeAnalyzer = new CodeAnalyzer(this.aiProvider);
     this.documentationGenerator = new DocumentationGenerator(this.aiProvider);
-    this.testGenerator = new TestGenerator(this.aiProvider);
+    this.testGenerator = new TestGenerator(codeProvider);  // Code generation uses dedicated provider
     this.unitTestRunner = new UnitTestRunner(config);
     this.testCoverageScanner = new TestCoverageScanner();
-    this.issueFixer = new IssueFixer(this.aiProvider);
+    this.issueFixer = new IssueFixer(codeProvider);         // Fix generation uses dedicated provider
     this.appLauncher = new AppLauncher();
     this.backendValidator = new BackendValidator(this.aiProvider, config);
     this.reportGenerator = new ReportGenerator(config);
+
+    if (this.codeGenProvider) {
+      logger.info(`✅ Code-generation Claude provider active (model: ${config.ai.codeGeneration.claudeModel})`);
+      logger.info(`   → Used for: test generation, fix generation, failure analysis`);
+    }
+
+    // Sub-agents
+    const deps = {
+      aiProvider: this.aiProvider,
+      codeGenProvider: this.codeGenProvider || this.aiProvider,
+      codeAnalyzer: this.codeAnalyzer,
+      documentationGenerator: this.documentationGenerator,
+      testGenerator: this.testGenerator,
+      testCoverageScanner: this.testCoverageScanner,
+      stackDetector: StackDetector,
+      unitTestRunner: this.unitTestRunner,
+      testRunner: TestRunner,
+      issueFixer: this.issueFixer,
+      appLauncher: this.appLauncher,
+      reportGenerator: this.reportGenerator,
+      repoManager: this.repoManager,
+      dependencyInstaller: DependencyInstaller
+    };
+    this.generationAgent = new GenerationAgent(config, deps);
+    this.validationAgent = new ValidationAgent(config, deps);
+    this.executionAgent = new ExecutionAgent(config, deps);
 
     // Tracking
     this.iterationHistory = [];
@@ -50,10 +82,29 @@ class AgentOrchestrator {
 
   /**
    * Main entry point — runs the full agent pipeline.
+   * Delegates to sub-agent pipeline if runMode is set, otherwise uses legacy pipeline.
    * @param {Object} runConfig - { repoPath, repoUrl, branch, mode }
    * @param {Function} statusCallback - Called on status changes (optional, for DB updates)
    */
   async run(runConfig, statusCallback) {
+    const runMode = this.config.agent.runMode || 'full';
+
+    // Use sub-agent pipeline for all modes
+    if (['full', 'generation', 'validation', 'execution'].includes(runMode)) {
+      return this.runSubAgentPipeline(runConfig, statusCallback);
+    }
+
+    // Legacy fallback (kept for backward compatibility)
+    return this._runLegacyPipeline(runConfig, statusCallback);
+  }
+
+  /**
+   * Legacy pipeline — original monolithic execution flow.
+   * Kept for backward compatibility. Will be deprecated in future versions.
+   * @param {Object} runConfig - { repoPath, repoUrl, branch, mode }
+   * @param {Function} statusCallback - Called on status changes (optional, for DB updates)
+   */
+  async _runLegacyPipeline(runConfig, statusCallback) {
     this.startTime = Date.now();
     const mode = runConfig.mode || 'cli'; // 'cli' or 'api'
     let workDir;
@@ -1415,6 +1466,699 @@ Provide the complete fixed code.`;
         logger.error(`Failed to apply fix for ${issue.file}: ${err.message}`);
       }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // SUB-AGENT PIPELINE
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Run the sub-agent pipeline based on runMode.
+   * Supports: full | generation | validation | execution
+   * @param {object} runConfig - Run configuration
+   * @param {Function} statusCallback - Status update callback
+   */
+  async runSubAgentPipeline(runConfig, statusCallback) {
+    this.startTime = Date.now();
+    const runMode = this.config.agent.runMode || 'full';
+    let workDir;
+
+    const updateStatus = (newStatus) => {
+      this.status = newStatus;
+      logger.info(`[${this.runId}] Status: ${newStatus}`);
+      if (statusCallback) statusCallback(this.runId, newStatus);
+    };
+
+    try {
+      // ── Setup: Acquire repo & install deps ──────────────────
+      updateStatus('setup');
+      const { workDir: setupWorkDir, fixBranch, baseBranch } = await this._setupWorkspace(runConfig);
+      workDir = setupWorkDir;
+
+      // Detect tech stack
+      const techStack = StackDetector.detect(workDir, runConfig.techStackOverride || {});
+      logger.info(`Stack detected: ${JSON.stringify(techStack)}`);
+
+      // Build shared context for sub-agents
+      const testTypes = this.config.testing.types;
+      const context = {
+        workDir,
+        techStack,
+        testTypes,
+        runId: this.runId,
+        repoPath: workDir,
+        branch: runConfig.branch || this.config.agent.branch || 'main',
+        appUrl: null
+      };
+
+      // Results tracking
+      const pipelineResults = {
+        generation: null,
+        validation: null,
+        execution: null
+      };
+
+      const maxMainIterations = this.config.agent.maxIterations;
+
+      // ══ Main Iteration Loop ═══════════════════════════════════
+      for (let mainIter = 0; mainIter < maxMainIterations; mainIter++) {
+        if (mainIter > 0) {
+          logger.info(`\n${'═'.repeat(70)}`);
+          logger.info(`  MAIN ITERATION ${mainIter + 1}/${maxMainIterations}`);
+          logger.info(`${'═'.repeat(70)}\n`);
+        }
+
+        // ── 1. Generation Agent ───────────────────────────────
+        if (['full', 'generation'].includes(runMode)) {
+          updateStatus('generation');
+          const genResult = await this.generationAgent.execute(context);
+          pipelineResults.generation = genResult;
+
+          // Propagate generation results to context
+          if (genResult.result) {
+            context.codeAnalysis = genResult.result.codeAnalysis;
+            context.appDocumentation = genResult.result.appDocumentation;
+            context.existingTests = genResult.result.existingTests;
+            context.generated = genResult.result.generated;
+          }
+
+          // Commit generated tests
+          const genChanges = await this.repoManager.getChangedFiles();
+          if (genChanges.length > 0) {
+            await this.repoManager.commitChanges(
+              `test: IGNIS generation_agent — tests generated (iter ${mainIter + 1})`,
+              genChanges
+            );
+          }
+
+          if (runMode === 'generation') break;
+        }
+
+        // ── 2. Validation & Fixes Agent ───────────────────────
+        if (['full', 'validation'].includes(runMode)) {
+          updateStatus('validation');
+          const valContext = {
+            ...context,
+            generated: context.generated || pipelineResults.generation?.result?.generated || {}
+          };
+          const valResult = await this.validationAgent.execute(valContext);
+          pipelineResults.validation = valResult;
+
+          // Commit validation fixes
+          const valChanges = await this.repoManager.getChangedFiles();
+          if (valChanges.length > 0) {
+            await this.repoManager.commitChanges(
+              `fix: IGNIS validation_agent — test fixes (iter ${mainIter + 1})`,
+              valChanges
+            );
+          }
+
+          if (runMode === 'validation') break;
+        }
+
+        // ── 3. Execution Agent (Test Runner & Coverage) ───────
+        if (['full', 'execution'].includes(runMode)) {
+          updateStatus('execution');
+
+          // Start app if needed
+          const appResult = await this.appLauncher.startApp(workDir, techStack, {
+            url: this.config.app.url || runConfig.appUrl,
+            autoStart: this.config.app.autoStart || runConfig.autoStartApp,
+            startCommand: this.config.app.startCommand || runConfig.appStartCommand,
+            port: this.config.app.port
+          });
+          context.appUrl = appResult.url || this.config.app.url || null;
+
+          if (appResult.started) {
+            logger.info(`✅ Application started at: ${appResult.url}`);
+          }
+
+          const execResult = await this.executionAgent.execute(context);
+          pipelineResults.execution = execResult;
+
+          // Stop app
+          await this.appLauncher.killApp();
+
+          // Commit any fixes from execution
+          const execChanges = await this.repoManager.getChangedFiles();
+          if (execChanges.length > 0) {
+            await this.repoManager.commitChanges(
+              `fix: IGNIS execution_agent — test/app fixes (iter ${mainIter + 1})`,
+              execChanges
+            );
+          }
+
+          if (runMode === 'execution') break;
+
+          // Check if coverage target met
+          if (execResult.coverageMet) {
+            logger.info(`\n✅ Coverage target met (${execResult.coverage}% >= ${this.config.agent.coverageThreshold}%) — stopping main iterations`);
+            break;
+          }
+        }
+      }
+
+      // ── Generate Final Report ─────────────────────────────────
+      updateStatus('reporting');
+      const finalReport = await this._generateFinalReport(workDir, pipelineResults, context, runConfig);
+
+      // ── Push & Create PR ──────────────────────────────────────
+      updateStatus('creating-pr');
+      const prResult = await this._pushAndCreatePR(fixBranch, baseBranch, pipelineResults, runConfig);
+
+      // ── Build Summary ─────────────────────────────────────────
+      this.summary = this._buildPipelineSummary(pipelineResults, runMode, finalReport);
+      this.summary.prUrl = prResult.prUrl || null;
+
+      // ── Aggregate & Log Token Usage ───────────────────────────
+      this.summary.tokenUsage = this._aggregateTokenUsage();
+      this._logTokenUsage(this.summary.tokenUsage);
+
+      updateStatus('completed');
+
+      logger.info(`\n${'═'.repeat(70)}`);
+      logger.info(`  PIPELINE COMPLETE — ${this.summary.status}`);
+      logger.info(`  Unit Coverage: ${this.summary.unitCoverage}% | Automation Coverage: ${this.summary.automationCoverage}%`);
+      logger.info(`  Target: ${this.config.agent.coverageThreshold}%`);
+      logger.info(`${'═'.repeat(70)}\n`);
+
+      return this.summary;
+
+    } catch (err) {
+      logger.error(`Pipeline failed: ${err.message}`);
+      logger.error(err.stack);
+      this.status = 'failed';
+      this.summary = { status: 'failed', error: err.message, duration: Date.now() - this.startTime };
+      await this.appLauncher.killApp().catch(() => {});
+      throw err;
+    }
+  }
+
+  /**
+   * Setup workspace: resolve path, install deps, create branch.
+   */
+  async _setupWorkspace(runConfig) {
+    let workDir;
+    const mode = runConfig.mode || 'cli';
+
+    if (mode === 'cli' || runConfig.repoPath) {
+      workDir = runConfig.repoPath || process.env.GITHUB_WORKSPACE;
+      await this.repoManager.useLocalWorkspace(workDir);
+    } else {
+      workDir = path.join(this.config.agent.workDir, this.runId);
+      await this.repoManager.cloneRepo(runConfig.repoUrl, workDir, this.config.github.token);
+    }
+
+    // Create fix branch
+    const branch = runConfig.branch || this.config.agent.branch || 'main';
+    const fixBranch = `${this.config.agent.fixBranchPrefix}-${this.runId.slice(0, 8)}`;
+    logger.info(`Creating branch: ${fixBranch} from ${branch}`);
+    await this.repoManager.createBranch(fixBranch);
+    logger.info(`✅ Branch created: ${fixBranch}`);
+
+    // Install dependencies
+    logger.info('Installing dependencies...');
+    try {
+      const { manager: packageManager, installDir } = DependencyInstaller.detectPackageManager(workDir);
+      if (packageManager) {
+        await DependencyInstaller.installDependencies(installDir, packageManager);
+        await DependencyInstaller.installPlaywrightBrowsers(installDir);
+        DependencyInstaller.verifyInstallation(installDir);
+        logger.info('✅ Dependencies installed');
+      }
+    } catch (err) {
+      logger.error(`Dependency installation failed: ${err.message}`);
+      throw err;
+    }
+
+    // Resolve environment
+    let providedSecrets = {};
+    if (process.env.APP_SECRETS) {
+      try { providedSecrets = JSON.parse(process.env.APP_SECRETS); } catch { /* ignore */ }
+    }
+    if (runConfig.appSecrets) providedSecrets = { ...providedSecrets, ...runConfig.appSecrets };
+    const { envMap } = EnvHandler.resolveEnvironment(workDir, providedSecrets);
+    EnvHandler.writeEnvFile(workDir, envMap);
+
+    return { workDir, fixBranch, baseBranch: branch };
+  }
+
+  /**
+   * Generate final comprehensive report from all sub-agent results.
+   */
+  async _generateFinalReport(workDir, pipelineResults, context, runConfig) {
+    if (!this.config.agent.generateAnalysisReport) return null;
+
+    try {
+      const execResult = pipelineResults.execution?.result || {};
+      const reportData = {
+        runId: this.runId,
+        repository: runConfig.repoUrl || workDir,
+        branch: context.branch,
+        agentVersion: '2.0.0',
+        aiProvider: this.config.ai.provider,
+        maxIterations: this.config.agent.maxIterations,
+        subAgentMaxIterations: this.config.agent.subAgentMaxIterations,
+        coverageThreshold: this.config.agent.coverageThreshold,
+        runMode: this.config.agent.runMode,
+        testTypes: this.config.testing.types,
+        codeAnalysis: context.codeAnalysis || null,
+        appDocumentation: context.appDocumentation || null,
+        testResults: execResult.automationTestResults || null,
+        testResultsWorkDir: workDir,
+        unitTestResults: execResult.unitTestResults || null,
+        pipelineResults: {
+          generation: pipelineResults.generation ? {
+            status: pipelineResults.generation.status,
+            iterations: pipelineResults.generation.iterations,
+            coverage: pipelineResults.generation.coverage
+          } : null,
+          validation: pipelineResults.validation ? {
+            status: pipelineResults.validation.status,
+            iterations: pipelineResults.validation.iterations,
+            coverage: pipelineResults.validation.coverage
+          } : null,
+          execution: pipelineResults.execution ? {
+            status: pipelineResults.execution.status,
+            iterations: pipelineResults.execution.iterations,
+            coverage: pipelineResults.execution.coverage,
+            unitCoverage: execResult.unitCoverage,
+            automationCoverage: execResult.automationCoverage
+          } : null
+        },
+        tokenUsage: this._aggregateTokenUsage(),
+        duration: Date.now() - this.startTime
+      };
+
+      const reportInfo = await this.reportGenerator.generateComprehensiveReport(workDir, reportData);
+      logger.info(`Report generated: ${reportInfo.reportPath}`);
+
+      // Commit report
+      const reportFiles = await this.repoManager.getChangedFiles();
+      if (reportFiles.length > 0) {
+        await this.repoManager.commitChanges('docs: IGNIS report — comprehensive analysis report', reportFiles);
+      }
+
+      return reportInfo;
+    } catch (err) {
+      logger.warn(`Report generation failed: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Push branch to remote and create a Pull Request.
+   * @param {string} fixBranch - The feature branch name to push
+   * @param {string} baseBranch - The base branch to open PR against
+   * @param {object} pipelineResults - Results from all sub-agents
+   * @param {object} runConfig - Run configuration
+   * @returns {object} - { prUrl, pushed }
+   */
+  async _pushAndCreatePR(fixBranch, baseBranch, pipelineResults, runConfig) {
+    const result = { prUrl: null, pushed: false };
+
+    // Skip if no GitHub token configured (local-only mode)
+    if (!this.config.github.token) {
+      logger.info('ℹ️ No GitHub token configured — skipping push and PR creation');
+      return result;
+    }
+
+    // Skip if explicitly disabled
+    if (this.config.agent.skipPR) {
+      logger.info('ℹ️ PR creation disabled via config — skipping');
+      return result;
+    }
+
+    try {
+      // Commit any remaining uncommitted changes
+      const remainingChanges = await this.repoManager.getChangedFiles();
+      if (remainingChanges.length > 0) {
+        await this.repoManager.commitChanges('chore: IGNIS — remaining pipeline changes', remainingChanges);
+      }
+
+      // Push branch to remote
+      logger.info(`Pushing branch: ${fixBranch}`);
+      await this.repoManager.pushBranch(fixBranch);
+      result.pushed = true;
+      logger.info(`✅ Branch pushed: ${fixBranch}`);
+
+    } catch (pushErr) {
+      logger.error(`Failed to push branch ${fixBranch}: ${pushErr.message}`);
+      logger.error('PR creation skipped — branch could not be pushed to remote');
+      return result;
+    }
+
+    try {
+      // Build PR title based on results
+      const execResult = pipelineResults.execution?.result || {};
+      const allPassed = (execResult.unitTestResults?.failed || 0) === 0 &&
+                        (execResult.automationTestResults?.failed || 0) === 0;
+      const unitCoverage = execResult.unitCoverage || 0;
+      const automationCoverage = execResult.automationCoverage || 0;
+      const coverageMet = unitCoverage >= this.config.agent.coverageThreshold &&
+                          automationCoverage >= this.config.agent.coverageThreshold;
+
+      const title = allPassed && coverageMet
+        ? `✅ IGNIS: All tests passing — coverage ${unitCoverage}% unit / ${automationCoverage}% automation`
+        : allPassed
+          ? `⚠️ IGNIS: Tests passing — coverage below target (${unitCoverage}% / ${automationCoverage}%)`
+          : `⚠️ IGNIS: Partial — ${execResult.unitTestResults?.failed || 0} unit + ${execResult.automationTestResults?.failed || 0} automation failures`;
+
+      // Build PR body
+      const prBody = this._buildSubAgentPrBody(pipelineResults, runConfig);
+
+      // Create PR
+      const pr = await this.repoManager.createPR({
+        title,
+        body: prBody,
+        head: fixBranch,
+        base: baseBranch
+      });
+
+      result.prUrl = pr.html_url;
+      logger.info(`✅ PR created: ${pr.html_url}`);
+
+    } catch (prErr) {
+      logger.error(`Failed to create PR: ${prErr.message}`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Build a markdown PR body summarizing sub-agent pipeline results.
+   */
+  _buildSubAgentPrBody(pipelineResults, runConfig) {
+    const execResult = pipelineResults.execution?.result || {};
+    const unitCoverage = execResult.unitCoverage || 0;
+    const automationCoverage = execResult.automationCoverage || 0;
+    const threshold = this.config.agent.coverageThreshold;
+
+    const lines = [
+      '## 🔥 IGNIS Automation Test Agent — Pipeline Results',
+      '',
+      '### Configuration',
+      `| Setting | Value |`,
+      `|---------|-------|`,
+      `| Run Mode | \`${this.config.agent.runMode}\` |`,
+      `| AI Provider | \`${this.config.ai.provider}\` |`,
+      `| Coverage Threshold | ${threshold}% |`,
+      `| Max Main Iterations | ${this.config.agent.maxIterations} |`,
+      `| Sub-Agent Max Iterations | ${this.config.agent.subAgentMaxIterations} |`,
+      `| Test Types | ${this.config.testing.types.join(', ')} |`,
+      '',
+      '### Coverage Results',
+      `| Metric | Result | Target | Status |`,
+      `|--------|--------|--------|--------|`,
+      `| Unit Test Coverage | ${unitCoverage}% | ${threshold}% | ${unitCoverage >= threshold ? '✅' : '❌'} |`,
+      `| Automation Test Coverage | ${automationCoverage}% | ${threshold}% | ${automationCoverage >= threshold ? '✅' : '❌'} |`,
+      ''
+    ];
+
+    // Sub-agent results
+    lines.push('### Sub-Agent Summary');
+    lines.push('| Agent | Status | Iterations |');
+    lines.push('|-------|--------|------------|');
+
+    if (pipelineResults.generation) {
+      lines.push(`| Generation | ${pipelineResults.generation.status === 'success' ? '✅' : '⚠️'} ${pipelineResults.generation.status} | ${pipelineResults.generation.iterations} |`);
+    }
+    if (pipelineResults.validation) {
+      lines.push(`| Validation | ${pipelineResults.validation.status === 'success' ? '✅' : '⚠️'} ${pipelineResults.validation.status} | ${pipelineResults.validation.iterations} |`);
+    }
+    if (pipelineResults.execution) {
+      lines.push(`| Execution | ${pipelineResults.execution.status === 'success' ? '✅' : '⚠️'} ${pipelineResults.execution.status} | ${pipelineResults.execution.iterations} |`);
+    }
+
+    // Test results detail
+    if (execResult.unitTestResults) {
+      const u = execResult.unitTestResults;
+      lines.push('');
+      lines.push('### Unit Test Results');
+      lines.push(`- **Passed:** ${u.passed || 0}`);
+      lines.push(`- **Failed:** ${u.failed || 0}`);
+      lines.push(`- **Skipped:** ${u.skipped || 0}`);
+      lines.push(`- **Total:** ${u.total || 0}`);
+    }
+
+    if (execResult.automationTestResults) {
+      const a = execResult.automationTestResults;
+      lines.push('');
+      lines.push('### Automation Test Results');
+      lines.push(`- **Passed:** ${a.passed || 0}`);
+      lines.push(`- **Failed:** ${a.failed || 0}`);
+      lines.push(`- **Skipped:** ${a.skipped || 0}`);
+      lines.push(`- **Total:** ${a.total || 0}`);
+    }
+
+    // Token usage section
+    const tokenUsage = this._aggregateTokenUsage();
+    lines.push('');
+    lines.push('### Token Usage');
+    lines.push(`| Provider | Model | Input | Output | Total | Calls |`);
+    lines.push(`|----------|-------|-------|--------|-------|-------|`);
+    const p = tokenUsage.providers.primary;
+    lines.push(`| ${p.provider} (primary) | ${p.model} | ${p.inputTokens.toLocaleString()} | ${p.outputTokens.toLocaleString()} | ${p.totalTokens.toLocaleString()} | ${p.calls} |`);
+    if (tokenUsage.providers.codeGeneration) {
+      const cg = tokenUsage.providers.codeGeneration;
+      lines.push(`| ${cg.provider} (code-gen) | ${cg.model} | ${cg.inputTokens.toLocaleString()} | ${cg.outputTokens.toLocaleString()} | ${cg.totalTokens.toLocaleString()} | ${cg.calls} |`);
+    }
+    lines.push(`| **TOTAL** | — | **${tokenUsage.totalInputTokens.toLocaleString()}** | **${tokenUsage.totalOutputTokens.toLocaleString()}** | **${tokenUsage.totalTokens.toLocaleString()}** | **${tokenUsage.totalCalls}** |`);
+
+    lines.push('');
+    lines.push('---');
+    lines.push(`*Generated by IGNIS v2.0.0 | Run ID: \`${this.runId}\`*`);
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Build the final pipeline summary.
+   */
+  _buildPipelineSummary(pipelineResults, runMode, finalReport) {
+    const execResult = pipelineResults.execution?.result || {};
+    const unitCoverage = execResult.unitCoverage || 0;
+    const automationCoverage = execResult.automationCoverage || 0;
+    const coverageThreshold = this.config.agent.coverageThreshold;
+
+    const coverageMet = unitCoverage >= coverageThreshold && automationCoverage >= coverageThreshold;
+    const allPassed = (execResult.unitTestResults?.failed || 0) === 0 &&
+                      (execResult.automationTestResults?.failed || 0) === 0;
+
+    let status;
+    if (coverageMet && allPassed) status = 'all-passed';
+    else if (allPassed) status = 'passed-below-coverage';
+    else status = 'partial';
+
+    return {
+      runId: this.runId,
+      status,
+      runMode,
+      coverageThreshold,
+      unitCoverage,
+      automationCoverage,
+      coverageMet,
+      pipelineResults: {
+        generation: pipelineResults.generation ? {
+          status: pipelineResults.generation.status,
+          iterations: pipelineResults.generation.iterations
+        } : null,
+        validation: pipelineResults.validation ? {
+          status: pipelineResults.validation.status,
+          iterations: pipelineResults.validation.iterations
+        } : null,
+        execution: pipelineResults.execution ? {
+          status: pipelineResults.execution.status,
+          iterations: pipelineResults.execution.iterations,
+          coverage: pipelineResults.execution.coverage
+        } : null
+      },
+      unitTestResults: execResult.unitTestResults || null,
+      automationTestResults: execResult.automationTestResults || null,
+      report: finalReport?.reportPath || null,
+      duration: Date.now() - this.startTime
+    };
+  }
+
+  /**
+   * Run a single sub-agent independently (for manual execution mode).
+   * @param {string} agentName - 'generation' | 'validation' | 'execution'
+   * @param {object} runConfig - Configuration including repoPath
+   * @returns {object} - Sub-agent result
+   */
+  async runSingleSubAgent(agentName, runConfig) {
+    this.startTime = Date.now();
+    const workDir = runConfig.repoPath || process.env.GITHUB_WORKSPACE;
+
+    // Minimal setup (no branch creation for single-agent mode)
+    await this.repoManager.useLocalWorkspace(workDir);
+    const techStack = StackDetector.detect(workDir, runConfig.techStackOverride || {});
+
+    const context = {
+      workDir,
+      techStack,
+      testTypes: this.config.testing.types,
+      runId: this.runId,
+      repoPath: workDir,
+      branch: runConfig.branch || 'main',
+      appUrl: runConfig.appUrl || this.config.app.url || null,
+      existingTests: null,
+      codeAnalysis: null,
+      appDocumentation: null,
+      generated: null
+    };
+
+    // Load previous results if available (from prior sub-agent runs)
+    const stateFile = path.join(workDir, 'generated-tests', '.ignis-state.json');
+    if (fs.existsSync(stateFile)) {
+      try {
+        const savedState = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+        context.codeAnalysis = savedState.codeAnalysis || null;
+        context.appDocumentation = savedState.appDocumentation || null;
+        context.existingTests = savedState.existingTests || null;
+        context.generated = savedState.generated || null;
+        logger.info(`Loaded pipeline state from previous sub-agent run`);
+      } catch { /* ignore */ }
+    }
+
+    let result;
+    switch (agentName) {
+      case 'generation':
+        result = await this.generationAgent.execute(context);
+        // Save state for next sub-agent
+        this._savePipelineState(workDir, {
+          codeAnalysis: result.result?.codeAnalysis,
+          appDocumentation: result.result?.appDocumentation,
+          existingTests: result.result?.existingTests,
+          generated: result.result?.generated
+        });
+        break;
+
+      case 'validation':
+        if (!context.codeAnalysis) {
+          // Need to run analysis first
+          const codeAnalysis = await this.codeAnalyzer.analyze(workDir, techStack);
+          context.codeAnalysis = codeAnalysis;
+        }
+        result = await this.validationAgent.execute(context);
+        break;
+
+      case 'execution':
+        // Start app
+        const appResult = await this.appLauncher.startApp(workDir, techStack, {
+          url: this.config.app.url || runConfig.appUrl,
+          autoStart: this.config.app.autoStart || runConfig.autoStartApp,
+          startCommand: this.config.app.startCommand,
+          port: this.config.app.port
+        });
+        context.appUrl = appResult.url || null;
+        result = await this.executionAgent.execute(context);
+        await this.appLauncher.killApp();
+        break;
+
+      default:
+        throw new Error(`Unknown sub-agent: ${agentName}. Valid: generation, validation, execution`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Save pipeline state between sub-agent runs.
+   */
+  _savePipelineState(workDir, state) {
+    const stateDir = path.join(workDir, 'generated-tests');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const stateFile = path.join(stateDir, '.ignis-state.json');
+
+    // Only save serializable data (exclude large source content)
+    const serializableState = {
+      timestamp: new Date().toISOString(),
+      codeAnalysis: state.codeAnalysis ? {
+        structure: state.codeAnalysis.structure,
+        surface: {
+          routes: state.codeAnalysis.surface?.routes,
+          apiEndpoints: state.codeAnalysis.surface?.apiEndpoints,
+          components: state.codeAnalysis.surface?.components,
+          models: state.codeAnalysis.surface?.models
+        }
+      } : null,
+      appDocumentation: state.appDocumentation,
+      existingTests: state.existingTests,
+      generated: state.generated ? Object.fromEntries(
+        Object.entries(state.generated).map(([k, v]) => [k, { files: v.files, skipped: v.skipped }])
+      ) : null
+    };
+
+    fs.writeFileSync(stateFile, JSON.stringify(serializableState, null, 2), 'utf-8');
+    logger.info(`Pipeline state saved to: ${path.relative(workDir, stateFile)}`);
+  }
+
+  /**
+   * Aggregate token usage from all AI providers (primary + code-gen).
+   * @returns {object} - Combined token usage stats
+   */
+  _aggregateTokenUsage() {
+    const primaryUsage = this.aiProvider.getTokenUsage();
+    const codeGenUsage = this.codeGenProvider ? this.codeGenProvider.getTokenUsage() : null;
+
+    const combined = {
+      totalInputTokens: primaryUsage.totalInputTokens + (codeGenUsage?.totalInputTokens || 0),
+      totalOutputTokens: primaryUsage.totalOutputTokens + (codeGenUsage?.totalOutputTokens || 0),
+      totalTokens: primaryUsage.totalTokens + (codeGenUsage?.totalTokens || 0),
+      totalCalls: primaryUsage.calls + (codeGenUsage?.calls || 0),
+      providers: {
+        primary: {
+          provider: this.config.ai.provider,
+          model: this.config.ai[this.config.ai.provider]?.model || 'unknown',
+          inputTokens: primaryUsage.totalInputTokens,
+          outputTokens: primaryUsage.totalOutputTokens,
+          totalTokens: primaryUsage.totalTokens,
+          calls: primaryUsage.calls
+        }
+      }
+    };
+
+    if (codeGenUsage && codeGenUsage.calls > 0) {
+      combined.providers.codeGeneration = {
+        provider: 'claude',
+        model: this.config.ai.codeGeneration.claudeModel,
+        inputTokens: codeGenUsage.totalInputTokens,
+        outputTokens: codeGenUsage.totalOutputTokens,
+        totalTokens: codeGenUsage.totalTokens,
+        calls: codeGenUsage.calls
+      };
+    }
+
+    return combined;
+  }
+
+  /**
+   * Log token usage summary to logger output.
+   */
+  _logTokenUsage(tokenUsage) {
+    logger.info(`\n${'─'.repeat(70)}`);
+    logger.info(`  TOKEN USAGE SUMMARY`);
+    logger.info(`${'─'.repeat(70)}`);
+    logger.info(`  Total Tokens: ${tokenUsage.totalTokens.toLocaleString()}`);
+    logger.info(`  Input Tokens: ${tokenUsage.totalInputTokens.toLocaleString()}`);
+    logger.info(`  Output Tokens: ${tokenUsage.totalOutputTokens.toLocaleString()}`);
+    logger.info(`  Total API Calls: ${tokenUsage.totalCalls}`);
+    logger.info(`  ──────────────────────────────────────`);
+
+    const primary = tokenUsage.providers.primary;
+    logger.info(`  Primary Provider: ${primary.provider} (${primary.model})`);
+    logger.info(`    Tokens: ${primary.totalTokens.toLocaleString()} (${primary.inputTokens.toLocaleString()} in / ${primary.outputTokens.toLocaleString()} out)`);
+    logger.info(`    Calls: ${primary.calls}`);
+
+    if (tokenUsage.providers.codeGeneration) {
+      const cg = tokenUsage.providers.codeGeneration;
+      logger.info(`  Code-Gen Provider: ${cg.provider} (${cg.model})`);
+      logger.info(`    Tokens: ${cg.totalTokens.toLocaleString()} (${cg.inputTokens.toLocaleString()} in / ${cg.outputTokens.toLocaleString()} out)`);
+      logger.info(`    Calls: ${cg.calls}`);
+    }
+
+    logger.info(`${'─'.repeat(70)}\n`);
   }
 
   getRunId() { return this.runId; }

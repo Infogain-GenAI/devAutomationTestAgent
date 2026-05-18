@@ -73,6 +73,9 @@ async function main() {
   logger.info(`Base branch: ${branch}`);
   logger.info(`AI Provider: ${validatedConfig.ai.provider}`);
   logger.info(`Max iterations: ${validatedConfig.agent.maxIterations}`);
+  logger.info(`Sub-agent max iterations: ${validatedConfig.agent.subAgentMaxIterations}`);
+  logger.info(`Coverage threshold: ${validatedConfig.agent.coverageThreshold}%`);
+  logger.info(`Run mode: ${validatedConfig.agent.runMode}`);
   logger.info(`Test types: ${validatedConfig.testing.types.join(', ')}`);
 
   // Parse app secrets if provided
@@ -88,19 +91,52 @@ async function main() {
   // Create and run orchestrator
   const orchestrator = new AgentOrchestrator(validatedConfig);
 
+  // Determine execution path
+  const runMode = validatedConfig.agent.runMode;
+  const singleAgent = process.env.RUN_AGENT; // For manual single-agent execution
+
   try {
-    const summary = await orchestrator.run({
-      repoPath,
-      branch,
-      mode: 'cli',
-      appSecrets,
-      autoStartApp: validatedConfig.app.autoStart,
-      appStartCommand: validatedConfig.app.startCommand,
-      appUrl: validatedConfig.app.url,
-      techStackOverride: process.env.TECH_STACK_OVERRIDE
-        ? JSON.parse(process.env.TECH_STACK_OVERRIDE)
-        : {}
-    });
+    let summary;
+
+    if (singleAgent && ['generation', 'validation', 'execution'].includes(singleAgent)) {
+      // Manual single sub-agent execution
+      logger.info(`\n🔧 Running single sub-agent: ${singleAgent}`);
+      logger.info('─'.repeat(50));
+      summary = await orchestrator.runSingleSubAgent(singleAgent, {
+        repoPath,
+        branch,
+        mode: 'cli',
+        appSecrets,
+        autoStartApp: validatedConfig.app.autoStart,
+        appStartCommand: validatedConfig.app.startCommand,
+        appUrl: validatedConfig.app.url,
+        techStackOverride: process.env.TECH_STACK_OVERRIDE
+          ? JSON.parse(process.env.TECH_STACK_OVERRIDE)
+          : {}
+      });
+
+      // Single agent result handling
+      logger.info(`\nSub-agent "${singleAgent}" completed: ${summary.status}`);
+      if (summary.coverage !== undefined) {
+        logger.info(`Coverage: ${summary.coverage}%`);
+      }
+      process.exit(summary.status === 'success' || summary.status === 'completed' ? 0 : 1);
+
+    } else {
+      // Full pipeline (sub-agent based)
+      summary = await orchestrator.run({
+        repoPath,
+        branch,
+        mode: 'cli',
+        appSecrets,
+        autoStartApp: validatedConfig.app.autoStart,
+        appStartCommand: validatedConfig.app.startCommand,
+        appUrl: validatedConfig.app.url,
+        techStackOverride: process.env.TECH_STACK_OVERRIDE
+          ? JSON.parse(process.env.TECH_STACK_OVERRIDE)
+          : {}
+      });
+    }
 
     // Write GitHub Actions step summary
     writeStepSummary(orchestrator);
@@ -122,8 +158,11 @@ async function main() {
 
     // Exit code based on result
     if (summary.status === 'all-passed') {
-      logger.info('✅ All tests passed — exiting with code 0');
+      logger.info('✅ All tests passed with coverage met — exiting with code 0');
       process.exit(0);
+    } else if (summary.status === 'passed-below-coverage') {
+      logger.info(`⚠️ Tests passed but coverage below ${validatedConfig.agent.coverageThreshold}% — exiting with code 1`);
+      process.exit(1);
     } else if (summary.status === 'partial') {
       logger.info('⚠️ Partial fixes applied — exiting with code 1');
       process.exit(1);
@@ -300,6 +339,32 @@ function writeRunSummaryLog(summary, repoPath) {
       summary.errors.forEach((error, idx) => {
         lines.push(`   ${idx + 1}. ${error.message || error}`);
       });
+      lines.push('');
+    }
+    
+    // Token Usage
+    if (summary.tokenUsage) {
+      lines.push('═'.repeat(100));
+      lines.push('🔢 TOKEN USAGE');
+      lines.push('═'.repeat(100));
+      lines.push('');
+      lines.push(`Total Tokens:       ${summary.tokenUsage.totalTokens ? summary.tokenUsage.totalTokens.toLocaleString() : '0'}`);
+      lines.push(`  Input Tokens:     ${summary.tokenUsage.totalInputTokens ? summary.tokenUsage.totalInputTokens.toLocaleString() : '0'}`);
+      lines.push(`  Output Tokens:    ${summary.tokenUsage.totalOutputTokens ? summary.tokenUsage.totalOutputTokens.toLocaleString() : '0'}`);
+      lines.push(`Total API Calls:    ${summary.tokenUsage.totalCalls || 0}`);
+      lines.push('');
+      if (summary.tokenUsage.providers) {
+        const p = summary.tokenUsage.providers.primary;
+        if (p) {
+          lines.push(`  Primary Provider: ${p.provider} (${p.model})`);
+          lines.push(`    Tokens: ${p.totalTokens ? p.totalTokens.toLocaleString() : '0'} (${p.inputTokens ? p.inputTokens.toLocaleString() : '0'} in / ${p.outputTokens ? p.outputTokens.toLocaleString() : '0'} out) | Calls: ${p.calls || 0}`);
+        }
+        const cg = summary.tokenUsage.providers.codeGeneration;
+        if (cg) {
+          lines.push(`  Code-Gen Provider: ${cg.provider} (${cg.model})`);
+          lines.push(`    Tokens: ${cg.totalTokens ? cg.totalTokens.toLocaleString() : '0'} (${cg.inputTokens ? cg.inputTokens.toLocaleString() : '0'} in / ${cg.outputTokens ? cg.outputTokens.toLocaleString() : '0'} out) | Calls: ${cg.calls || 0}`);
+        }
+      }
       lines.push('');
     }
     

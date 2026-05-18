@@ -28,6 +28,7 @@ class OpenAIProvider extends BaseAIProvider {
       ]
     });
 
+    this._recordTokenUsage('analyzeCode', response.usage);
     const text = response.choices[0]?.message?.content || '';
     return this._parseJsonResponse(text);
   }
@@ -273,6 +274,7 @@ When generating tests:
       ]
     });
 
+    this._recordTokenUsage('generateTests', response.usage);
     const text = response.choices[0]?.message?.content || '';
     return this._parseJsonResponse(text);
   }
@@ -293,6 +295,7 @@ When generating tests:
       ]
     });
 
+    this._recordTokenUsage('analyzeFailures', response.usage);
     const text = response.choices[0]?.message?.content || '';
     return this._parseJsonResponse(text);
   }
@@ -313,6 +316,7 @@ When generating tests:
       ]
     });
 
+    this._recordTokenUsage('generateFix', response.usage);
     const text = response.choices[0]?.message?.content || '';
     return this._parseJsonResponse(text);
   }
