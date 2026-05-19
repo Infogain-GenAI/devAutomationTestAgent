@@ -35,16 +35,18 @@ class TestCoverageScanner {
 
     this.ignoreDirectories = new Set([
       'node_modules', '.git', 'dist', 'build', 'coverage',
-      '.next', '.nuxt', '__pycache__', 'venv', '.venv',
-      'generated-tests' // Don't scan our own generated tests
+      '.next', '.nuxt', '__pycache__', 'venv', '.venv'
     ]);
   }
 
   /**
-   * Scan repository for existing tests
+   * Scan repository for existing tests (includes generated-tests/ from prior iterations)
+   * @param {string} workDir - Workspace root
+   * @param {object} options - { includeGenerated: true } to also scan generated-tests/
    */
-  async scanExistingTests(workDir) {
-    logger.info('🔍 Scanning repository for existing tests...');
+  async scanExistingTests(workDir, options = {}) {
+    const includeGenerated = options.includeGenerated !== false; // Default: include
+    logger.info(`🔍 Scanning repository for existing tests${includeGenerated ? ' (including generated-tests/)' : ''}...`);
 
     const existingTests = {
       unit: [],
@@ -174,13 +176,15 @@ class TestCoverageScanner {
           targets: missing,
           existing: existing.length
         };
-      } else if (testType === 'unit' && existing.length <= 2) {
-        // Very few existing unit tests and no gaps found — likely the
-        // scanner couldn't detect all source files.  Generate additional
-        // tests anyway so we don't silently skip a near-empty test suite.
+      } else if (testType === 'unit' && existing.length <= 2 && !existing.some(t => t.file && t.file.startsWith('generated-tests'))) {
+        // Very few existing unit tests (all from original repo, none generated) and no gaps
+        // found — likely the scanner couldn't detect all source files. Generate additional
+        // tests so we don't silently skip a near-empty test suite.
+        // NOTE: If generated tests already exist in the count, skip this heuristic —
+        // it means the system already generated tests and gaps are genuinely empty.
         typesToGenerate[testType] = {
           generate: true,
-          reason: `Only ${existing.length} existing test(s) — generating additional coverage`,
+          reason: `Only ${existing.length} existing repo test(s) — generating additional coverage`,
           scope: 'full',
           targets: [],
           existing: existing.length

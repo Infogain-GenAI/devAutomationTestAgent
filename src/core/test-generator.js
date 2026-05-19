@@ -125,8 +125,9 @@ class TestGenerator {
       allFiles = result;
     }
 
-    // Write all generated files
+    // Write all generated files (skip if file already exists with similar content)
     const writtenFiles = [];
+    let skippedFiles = 0;
     for (const file of allFiles) {
       if (!file.path || !file.content) continue;
 
@@ -135,10 +136,35 @@ class TestGenerator {
       const fullPath = path.join(outputDir, safePath);
       const dir = path.dirname(fullPath);
 
+      // Skip if file already exists with substantially similar content
+      // This prevents overwriting previously generated tests on subsequent iterations
+      if (fs.existsSync(fullPath)) {
+        try {
+          const existingContent = fs.readFileSync(fullPath, 'utf-8');
+          // If existing file has real test content (not empty/placeholder), skip overwrite
+          if (existingContent.length > 200 && this._hasSimilarTestCoverage(existingContent, file.content)) {
+            skippedFiles++;
+            logger.debug(`Skipped (already exists): ${safePath}`);
+            continue;
+          }
+          // If new content is significantly larger, it's an extension — allow overwrite
+          if (file.content.length <= existingContent.length * 1.3) {
+            skippedFiles++;
+            logger.debug(`Skipped (existing has equal/more content): ${safePath}`);
+            continue;
+          }
+          logger.info(`Overwriting with extended content: ${safePath} (${existingContent.length} → ${file.content.length} bytes)`);
+        } catch { /* proceed with write if read fails */ }
+      }
+
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(fullPath, file.content, 'utf-8');
       writtenFiles.push(safePath);
       logger.debug(`Written test file: ${safePath}`);
+    }
+
+    if (skippedFiles > 0) {
+      logger.info(`⏭️  Skipped ${skippedFiles} file(s) that already exist from prior iterations`);
     }
 
     // Validate syntax of all generated .js/.ts files before running tests
@@ -1102,9 +1128,14 @@ module.exports = {
 
     if (existingTestFiles.length === 0) return null;
 
+    // Prioritize generated-tests/ files (most relevant for extension), then repo tests
+    const generatedFiles = existingTestFiles.filter(f => f.startsWith('generated-tests'));
+    const repoFiles = existingTestFiles.filter(f => !f.startsWith('generated-tests'));
+    const prioritizedFiles = [...generatedFiles, ...repoFiles];
+
     // Read content of existing test files (limit to first 10 for context size)
     const existingTestContent = {};
-    const filesToRead = existingTestFiles.slice(0, 10);
+    const filesToRead = prioritizedFiles.slice(0, 10);
 
     for (const relPath of filesToRead) {
       const fullPath = path.join(this._workDir, relPath);
@@ -1124,8 +1155,49 @@ module.exports = {
       existingFiles: Object.keys(existingTestContent),
       existingTestCode: existingTestContent,
       totalExistingTests: existingTestFiles.length,
-      instruction: 'EXTEND these existing tests — do NOT rewrite from scratch. Add new test cases for uncovered scenarios, edge cases, and NFR. Maintain the same code style, patterns, and conventions used in existing tests.'
+      generatedTestCount: generatedFiles.length,
+      instruction: generatedFiles.length > 0
+        ? 'EXTEND the existing generated tests — do NOT regenerate tests for scenarios already covered. Add ONLY NEW test cases for uncovered scenarios, edge cases, and NFR. Maintain the same code style and patterns.'
+        : 'EXTEND these existing tests — do NOT rewrite from scratch. Add new test cases for uncovered scenarios, edge cases, and NFR. Maintain the same code style, patterns, and conventions used in existing tests.'
     };
+  }
+
+  /**
+   * Check if two test file contents cover similar scenarios.
+   * Compares test/describe block names to detect duplicated test coverage.
+   * Returns true if the existing file already covers the same test scenarios.
+   */
+  _hasSimilarTestCoverage(existingContent, newContent) {
+    // Extract test names from both files
+    const extractTestNames = (content) => {
+      const names = new Set();
+      const patterns = [
+        /(?:test|it)\s*\(\s*['"`]([^'"`]+)['"`]/g,
+        /describe\s*\(\s*['"`]([^'"`]+)['"`]/g
+      ];
+      for (const pattern of patterns) {
+        let match;
+        while ((match = pattern.exec(content)) !== null) {
+          names.add(match[1].toLowerCase().trim());
+        }
+      }
+      return names;
+    };
+
+    const existingNames = extractTestNames(existingContent);
+    const newNames = extractTestNames(newContent);
+
+    if (existingNames.size === 0 || newNames.size === 0) return false;
+
+    // Count how many of the new test names already exist
+    let overlap = 0;
+    for (const name of newNames) {
+      if (existingNames.has(name)) overlap++;
+    }
+
+    // If > 60% of new test names are already in existing file, consider it similar
+    const overlapRatio = overlap / newNames.size;
+    return overlapRatio > 0.6;
   }
 }
 

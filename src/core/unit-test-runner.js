@@ -54,36 +54,89 @@ class UnitTestRunner {
   }
 
   /**
-   * Detect which test framework to use (Jest or Mocha)
+   * Detect which test framework to use (Jest, Mocha, or Vitest).
+   * Priority: 1) package.json deps → 2) test file content analysis → 3) default Jest
    */
   detectTestFramework(workDir) {
-    const packageJsonPath = path.join(workDir, 'package.json');
-    
-    if (fs.existsSync(packageJsonPath)) {
-      try {
-        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-        const deps = {
-          ...packageJson.dependencies,
-          ...packageJson.devDependencies
-        };
-        
-        if (deps['jest'] || deps['@jest/globals']) {
-          logger.info('Detected Jest test framework');
-          return 'jest';
-        }
-        
-        if (deps['mocha']) {
-          logger.info('Detected Mocha test framework');
-          return 'mocha';
-        }
-      } catch (err) {
-        logger.warn(`Failed to parse package.json: ${err.message}`);
-      }
-    }
-    
-    // Default to Jest (more popular)
+    // First check package.json
+    const fromPkg = this._getFrameworkFromPackageJson(workDir);
+    if (fromPkg) return fromPkg;
+
+    // Then analyze test file content
+    const fromFiles = this._detectFrameworkFromFiles(workDir);
+    if (fromFiles) return fromFiles;
+
+    // Default to Jest (most popular)
     logger.info('No test framework detected, defaulting to Jest');
     return 'jest';
+  }
+
+  /**
+   * Detect framework by reading content of existing test files.
+   * Checks for jest/mocha/vitest-specific imports and patterns.
+   */
+  _detectFrameworkFromFiles(workDir) {
+    const testDirs = ['__tests__', 'tests', 'test', 'spec', 'src/__tests__', 'src/tests'];
+    const filesToCheck = [];
+
+    for (const dir of testDirs) {
+      const fullDir = path.join(workDir, dir);
+      if (!fs.existsSync(fullDir)) continue;
+      try {
+        const entries = fs.readdirSync(fullDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile() && (entry.name.endsWith('.test.js') || entry.name.endsWith('.spec.js') ||
+              entry.name.endsWith('.test.ts') || entry.name.endsWith('.spec.ts'))) {
+            filesToCheck.push(path.join(fullDir, entry.name));
+            if (filesToCheck.length >= 5) break;
+          }
+        }
+      } catch {}
+      if (filesToCheck.length >= 5) break;
+    }
+
+    if (filesToCheck.length === 0) return null;
+
+    let jestScore = 0;
+    let mochaScore = 0;
+    let vitestScore = 0;
+
+    for (const file of filesToCheck) {
+      try {
+        const content = fs.readFileSync(file, 'utf-8').slice(0, 1500);
+
+        // Jest indicators
+        if (content.includes('@jest/globals') || content.includes("from 'jest'")) jestScore += 3;
+        if (content.includes('expect(') && content.includes('toBe')) jestScore += 2;
+        if (content.includes('jest.mock(') || content.includes('jest.fn(')) jestScore += 3;
+        if (content.includes('describe(') && content.includes('expect(')) jestScore += 1;
+
+        // Mocha/Chai indicators
+        if (content.includes("from 'chai'") || content.includes("require('chai')")) mochaScore += 3;
+        if (content.includes("from 'mocha'") || content.includes("require('mocha')")) mochaScore += 3;
+        if (content.includes('.should.') || content.includes('assert.')) mochaScore += 2;
+        if (content.includes("from 'sinon'") || content.includes("require('sinon')")) mochaScore += 2;
+
+        // Vitest indicators
+        if (content.includes("from 'vitest'") || content.includes("import { test") && content.includes('vitest')) vitestScore += 3;
+        if (content.includes('vi.mock(') || content.includes('vi.fn(')) vitestScore += 3;
+      } catch {}
+    }
+
+    if (vitestScore > jestScore && vitestScore > mochaScore) {
+      logger.info(`Detected Vitest from test file content (score: ${vitestScore})`);
+      return 'vitest';
+    }
+    if (mochaScore > jestScore) {
+      logger.info(`Detected Mocha from test file content (score: ${mochaScore})`);
+      return 'mocha';
+    }
+    if (jestScore > 0) {
+      logger.info(`Detected Jest from test file content (score: ${jestScore})`);
+      return 'jest';
+    }
+
+    return null;
   }
 
   /**
@@ -1066,7 +1119,8 @@ class UnitTestRunner {
   }
 
   /**
-   * Find unit test files (.test.js) in the test directory
+   * Find unit test files (.test.js AND .spec.js) in the test directory.
+   * Detects framework from file content — excludes only Playwright/Cypress files.
    */
   _findUnitTestFiles(testDir) {
     const files = [];
@@ -1081,14 +1135,21 @@ class UnitTestRunner {
           if (entry.isDirectory()) {
             walk(fullPath);
           } else if (
-            // Only pick up .test.js/.test.ts — NOT .spec.js/.spec.ts (those are Playwright/E2E tests)
-            (entry.name.endsWith('.test.js') || entry.name.endsWith('.test.ts')) &&
-            !entry.name.endsWith('.spec.js') && !entry.name.endsWith('.spec.ts')
+            entry.name.endsWith('.test.js') || entry.name.endsWith('.test.ts') ||
+            entry.name.endsWith('.spec.js') || entry.name.endsWith('.spec.ts')
           ) {
-            // Skip files that import from @playwright/test (they're E2E, not unit tests)
+            // Read beginning of file to detect framework
             try {
-              const content = fs.readFileSync(fullPath, 'utf-8').slice(0, 500);
-              if (content.includes('@playwright/test') || content.includes('playwright')) {
+              const content = fs.readFileSync(fullPath, 'utf-8').slice(0, 800);
+              // Skip files that are clearly Playwright or Cypress E2E tests
+              if (
+                content.includes('@playwright/test') ||
+                content.includes('import { test') && content.includes('playwright') ||
+                content.includes("require('@playwright/test')") ||
+                content.includes('require("@playwright/test")') ||
+                content.includes('cy.') && content.includes('describe(') ||
+                content.includes('cypress')
+              ) {
                 continue;
               }
             } catch {}

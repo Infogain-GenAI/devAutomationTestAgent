@@ -78,7 +78,7 @@ class GenerationAgent extends BaseSubAgent {
 
     // ── Phase 3: Scan Existing Tests ────────────────────────────
     logger.info('[generation] Phase 3: Scanning Existing Tests');
-    const existingTests = await this.testCoverageScanner.scanExistingTests(workDir);
+    const existingTests = await this.testCoverageScanner.scanExistingTests(workDir, { includeGenerated: true });
     const testGaps = await this.testCoverageScanner.identifyTestGaps(workDir, codeAnalysis, existingTests);
     const testPlan = this.testCoverageScanner.filterTestTypesToGenerate(testTypes, existingTests, testGaps);
 
@@ -147,6 +147,7 @@ class GenerationAgent extends BaseSubAgent {
 
   /**
    * Iterative generation: re-scan for gaps and generate additional tests.
+   * Files generated in prior iterations are now on disk and will be detected by the scanner.
    */
   async _iterativeGeneration(context, previousResult) {
     const { workDir, techStack, testTypes } = context;
@@ -154,9 +155,9 @@ class GenerationAgent extends BaseSubAgent {
     const appDocumentation = previousResult.appDocumentation;
     const artifacts = [];
 
-    // Re-scan for test gaps after previous generation
+    // Re-scan for test gaps — includes generated-tests/ from prior iterations
     logger.info(`[generation] Re-scanning for remaining test gaps (iteration ${this.currentIteration + 1})...`);
-    const existingTests = await this.testCoverageScanner.scanExistingTests(workDir);
+    const existingTests = await this.testCoverageScanner.scanExistingTests(workDir, { includeGenerated: true });
     const testGaps = await this.testCoverageScanner.identifyTestGaps(workDir, codeAnalysis, existingTests);
     const testPlan = this.testCoverageScanner.filterTestTypesToGenerate(testTypes, existingTests, testGaps);
 
@@ -168,6 +169,8 @@ class GenerationAgent extends BaseSubAgent {
       logger.info('[generation] ✅ No additional gaps found — generation complete');
       return { ...previousResult, complete: true };
     }
+
+    logger.info(`[generation] ${typesToGenerate.length} type(s) still have gaps: ${typesToGenerate.join(', ')}`);
 
     // Generate tests for remaining gaps
     const gapsForGeneration = {};
