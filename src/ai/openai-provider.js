@@ -34,7 +34,16 @@ class OpenAIProvider extends BaseAIProvider {
   }
 
   async generateTests(analysisResult, testType, framework) {
-    const systemPrompt = this._buildSystemPrompt('generate-tests');
+    const isUnitTest = ['unit', 'integration'].includes(testType);
+    const systemPrompt = this._buildSystemPrompt('generate-tests', {
+      language: framework?.language || 'JavaScript/TypeScript',
+      framework: framework?.framework || 'Node.js',
+      testRunner: isUnitTest ? 'Jest' : 'Playwright',
+      moduleSystem: 'CommonJS (require/module.exports)',
+      testType,
+      isUnitTest,
+      fileExtension: isUnitTest ? 'test.js' : 'spec.js'
+    });
     
     // Check if we're generating for gaps only
     const hasGaps = analysisResult.testGaps && analysisResult.testGaps.length > 0;
@@ -42,9 +51,6 @@ class OpenAIProvider extends BaseAIProvider {
     
     // Check if this is a chunked generation request
     const isChunked = !!analysisResult.chunkInfo;
-    
-    // Different instructions for unit vs E2E tests
-    const isUnitTest = ['unit', 'integration'].includes(testType);
     
     let testInstructions = '';
     

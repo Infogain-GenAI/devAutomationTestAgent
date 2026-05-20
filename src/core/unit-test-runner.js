@@ -299,6 +299,21 @@ class UnitTestRunner {
       logger.warn(`Jest was killed (exit code ${results.exitCode}) — likely OOM. Retrying without --coverage...`);
       process.env.JEST_COVERAGE = 'false';
       results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+
+      // If STILL OOM even without coverage, reduce parallelism to 1 worker
+      if (results.exitCode === 134 || results.exitCode === 137) {
+        logger.warn(`Jest STILL OOM (exit code ${results.exitCode}) without coverage. Retrying with --maxWorkers=1...`);
+        process.env.JEST_MAX_WORKERS = '1';
+        results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+        delete process.env.JEST_MAX_WORKERS;
+
+        // If STILL OOM with 1 worker, try running in batches (split dirs)
+        if ((results.exitCode === 134 || results.exitCode === 137) && dirs.length > 1) {
+          logger.warn('Jest OOM even with 1 worker. Running test directories in batches...');
+          results = await this._executeJestInBatches(framework, jestConfigPath, jestCwd, dirs);
+        }
+      }
+
       delete process.env.JEST_COVERAGE;
     }
 
@@ -358,23 +373,45 @@ class UnitTestRunner {
         if (brokenFiles.length > 0) {
           // Broken spec files detected — attempt to fix them, then retry WITH project config
           logger.warn(`Found ${brokenFiles.length} broken spec file(s): ${brokenFiles.map(f => f.file).join(', ')}`);
+          
+          // Log details about what packages are missing (Issue #4)
+          const missingPackages = this._extractMissingNpmModules(results.errors, results.rawOutput);
+          if (missingPackages.length > 0) {
+            logger.warn(`⚠️ MISSING PACKAGES causing test failures: ${missingPackages.join(', ')}`);
+            logger.warn(`   Install them with: npm install --save-dev ${missingPackages.join(' ')}`);
+          }
+
           const fixed = await this._fixBrokenSpecFiles(brokenFiles, jestCwd);
           if (fixed > 0) {
             logger.info(`Fixed ${fixed} spec file(s). Retrying with project jest config...`);
             results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
           }
         
-          // If still 0 tests after fixing spec files, fall back to no config (node env, no .spec files)
+          // If still 0 tests after fixing, retry with project config but EXCLUDE broken files
           if (results.exitCode !== 0 && results.total === 0) {
-            logger.warn(`Still 0 tests after fixing spec files. Stderr: ${results.errors.slice(0, 300)}`);
-            logger.info('Retrying without project jest.config.js (backend unit tests only)...');
+            const brokenPaths = brokenFiles.map(f => f.file.replace(/\\/g, '/'));
+            logger.warn(`Still 0 tests after fixing spec files. Excluding ${brokenPaths.length} broken file(s) and retrying with project config...`);
+            logger.warn(`   Excluded: ${brokenPaths.join(', ')}`);
+            results = await this._executeJestExcluding(framework, jestConfigPath, jestCwd, dirs, brokenPaths);
+          }
+          
+          // If STILL 0 tests, fall back to no config (node env)
+          if (results.exitCode !== 0 && results.total === 0) {
+            logger.warn(`Still 0 tests with exclusions. Falling back to basic node config...`);
+            logger.info('Retrying without project jest.config.js...');
             results = await this._executeJest(framework, null, jestCwd, dirs);
           }
         } else {
           // No broken spec files identified — likely a config/transform issue
-          // Fall back to running only backend-compatible tests (node env, no .spec files)
           logger.warn(`Jest config error (0 tests ran). Stderr: ${results.errors.slice(0, 500)}`);
-          logger.info('Retrying without project jest.config.js (backend unit tests only)...');
+          
+          // Log missing packages
+          const missingPackages = this._extractMissingNpmModules(results.errors, results.rawOutput);
+          if (missingPackages.length > 0) {
+            logger.warn(`⚠️ MISSING PACKAGES: ${missingPackages.join(', ')}`);
+          }
+          
+          logger.info('Retrying without project jest.config.js...');
           results = await this._executeJest(framework, null, jestCwd, dirs);
         }
       }
@@ -393,10 +430,16 @@ class UnitTestRunner {
       }
     }
 
+    // Final log of results
     if (results.exitCode === 0) {
       logger.info(`✅ All unit tests passed (${results.passed}/${results.total})`);
     } else if (results.total === 0) {
-      logger.warn(`⚠️ Jest exited with errors but ran 0 tests. Stderr: ${results.errors.slice(0, 800)}`);
+      logger.warn(`⚠️ Jest ran 0 tests. This means NO unit test coverage was measured.`);
+      logger.warn(`   Common causes:`);
+      logger.warn(`   - Broken test files preventing Jest from loading`);
+      logger.warn(`   - Missing transform for TypeScript (.ts/.tsx) files`);
+      logger.warn(`   - Missing test dependencies (check MISSING PACKAGES warnings above)`);
+      logger.warn(`   Stderr: ${results.errors.slice(0, 800)}`);
     } else {
       logger.warn(`❌ Unit tests failed: ${results.failed}/${results.total} failures`);
     }
@@ -417,16 +460,74 @@ class UnitTestRunner {
         if (process.env.JEST_COVERAGE !== 'false') {
           args.push('--coverage');
         }
+        // Limit workers if OOM occurred previously
+        if (process.env.JEST_MAX_WORKERS) {
+          args.push('--maxWorkers', process.env.JEST_MAX_WORKERS);
+        }
         if (configPath) {
           const relConfigPath = path.relative(cwd, configPath);
           args.push('--config', relConfigPath || 'jest.config.js');
         } else {
           // No config — write a temporary jest config file for backend-only mode
           // (Inline JSON via --config is unreliable on Windows PowerShell due to quote escaping)
+          // 
+          // CRITICAL: Do NOT exclude .test.ts/.test.tsx — many projects have TypeScript tests.
+          // Only exclude known-broken Playwright .spec. files from unit test runs.
           const tmpConfigPath = path.join(cwd, '.jest.backend.config.json');
+          const brokenSpecPatterns = [];
+          
+          // Only exclude .spec files if we know they are Playwright (they use @playwright/test)
+          // Check for Playwright config — if it exists, .spec files are likely Playwright E2E
+          const hasPlaywrightConfig = fs.existsSync(path.join(cwd, 'playwright.config.js')) ||
+                                      fs.existsSync(path.join(cwd, 'playwright.config.ts')) ||
+                                      fs.existsSync(path.join(cwd, '..', 'generated-tests', 'playwright.config.js'));
+          if (hasPlaywrightConfig) {
+            brokenSpecPatterns.push('.*\\.spec\\.');
+          }
+
+          // Determine transform config based on whether project has TypeScript test files
+          const hasTypescriptTests = dirs.some(d => {
+            try {
+              const entries = fs.readdirSync(d, { recursive: true });
+              return entries.some(e => typeof e === 'string' && (e.endsWith('.test.ts') || e.endsWith('.test.tsx') || e.endsWith('.spec.ts')));
+            } catch { return false; }
+          });
+
+          let transformConfig = {};
+          if (hasTypescriptTests) {
+            // Check if ts-jest is available; if not, try @swc/jest; if neither, install ts-jest
+            const hasTsJest = this._isModuleAvailable('ts-jest', cwd);
+            const hasSwcJest = this._isModuleAvailable('@swc/jest', cwd);
+            const hasBabelJest = this._isModuleAvailable('babel-jest', cwd);
+
+            if (hasTsJest) {
+              transformConfig = { '^.+\\.tsx?$': 'ts-jest' };
+            } else if (hasSwcJest) {
+              transformConfig = { '^.+\\.tsx?$': '@swc/jest' };
+            } else if (hasBabelJest) {
+              transformConfig = { '^.+\\.tsx?$': 'babel-jest' };
+            } else {
+              // Install ts-jest as the most common transform
+              logger.info('TypeScript test files detected but no transform available — installing ts-jest...');
+              try {
+                const { execSync } = require('child_process');
+                execSync('npm install --save-dev ts-jest typescript', {
+                  cwd, stdio: 'pipe', timeout: 120000,
+                  env: { ...process.env, NODE_ENV: 'development' }
+                });
+                transformConfig = { '^.+\\.tsx?$': 'ts-jest' };
+                logger.info('✅ ts-jest installed');
+              } catch (err) {
+                logger.warn(`Failed to install ts-jest: ${err.message.slice(0, 100)}`);
+                // Fall back to running without transform (only .js tests will work)
+              }
+            }
+          }
+
           fs.writeFileSync(tmpConfigPath, JSON.stringify({
             testEnvironment: 'node',
-            testPathIgnorePatterns: ['/node_modules/', '.*\\.spec\\.', '.*\\.test\\.ts$', '.*\\.test\\.tsx$']
+            testPathIgnorePatterns: ['/node_modules/', ...brokenSpecPatterns],
+            transform: transformConfig
           }, null, 2), 'utf-8');
           args.push('--config', '.jest.backend.config.json');
           const relDirs = dirs.map(d => path.relative(cwd, d).replace(/\\/g, '/'));
@@ -476,6 +577,121 @@ class UnitTestRunner {
         reject(err);
       });
     });
+  }
+
+  /**
+   * Execute Jest with project config but exclude specific broken files.
+   * This allows running all valid tests while skipping known-broken ones.
+   */
+  _executeJestExcluding(framework, configPath, cwd, dirs, excludeFiles) {
+    return new Promise((resolve, reject) => {
+      let args = ['--json', '--forceExit', '--passWithNoTests'];
+      if (process.env.JEST_COVERAGE !== 'false') {
+        args.push('--coverage');
+      }
+      if (configPath) {
+        const relConfigPath = path.relative(cwd, configPath);
+        args.push('--config', relConfigPath || 'jest.config.js');
+      }
+
+      // Add exclusion patterns for broken files
+      for (const file of excludeFiles) {
+        // Escape special regex chars and create pattern that matches the file
+        const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        args.push('--testPathIgnorePatterns', escaped);
+      }
+
+      const fullArgs = ['jest', ...args];
+
+      logger.info(`Running Jest excluding ${excludeFiles.length} broken file(s)...`);
+
+      const proc = spawn('npx', fullArgs, {
+        cwd,
+        shell: true,
+        stdio: 'pipe',
+        timeout: 5 * 60 * 1000
+      });
+
+      let stdout = '';
+      let stderr = '';
+      proc.stdout.on('data', (data) => {
+        const text = data.toString();
+        stdout += text;
+        if (text.includes('PASS') || text.includes('FAIL')) {
+          logger.info(text.trim());
+        }
+      });
+      proc.stderr.on('data', (data) => { stderr += data.toString(); });
+
+      proc.on('close', (code) => {
+        logger.info(`Unit tests (with exclusions) exited with code ${code}`);
+        const results = this.parseTestResults(stdout, stderr, framework, code);
+        resolve(results);
+      });
+
+      proc.on('error', (err) => {
+        logger.error(`Failed to run unit tests with exclusions: ${err.message}`);
+        reject(err);
+      });
+    });
+  }
+
+  /**
+   * Execute Jest in batches when OOM kills even single-worker runs.
+   * Runs each test directory separately and merges results.
+   */
+  async _executeJestInBatches(framework, configPath, cwd, dirs) {
+    logger.info(`Running Jest in ${dirs.length} batch(es) to avoid OOM...`);
+    
+    const mergedResults = {
+      framework,
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+      total: 0,
+      duration: 0,
+      exitCode: 0,
+      failures: [],
+      coverage: null,
+      rawOutput: '',
+      errors: ''
+    };
+
+    process.env.JEST_MAX_WORKERS = '1';
+
+    for (let i = 0; i < dirs.length; i++) {
+      const dir = dirs[i];
+      logger.info(`  Batch ${i + 1}/${dirs.length}: ${path.basename(dir)}`);
+      
+      const batchResult = await this._executeJest(framework, configPath, cwd, [dir]);
+      
+      // Merge results
+      mergedResults.passed += batchResult.passed || 0;
+      mergedResults.failed += batchResult.failed || 0;
+      mergedResults.skipped += batchResult.skipped || 0;
+      mergedResults.total += batchResult.total || 0;
+      mergedResults.duration += batchResult.duration || 0;
+      mergedResults.rawOutput += batchResult.rawOutput || '';
+      mergedResults.errors += batchResult.errors || '';
+      if (batchResult.failures) {
+        mergedResults.failures.push(...batchResult.failures);
+      }
+      if (batchResult.exitCode !== 0) {
+        mergedResults.exitCode = batchResult.exitCode;
+      }
+      // Take best coverage (later batches may override)
+      if (batchResult.coverage) {
+        if (!mergedResults.coverage || 
+            (batchResult.coverage.lines || 0) > (mergedResults.coverage.lines || 0)) {
+          mergedResults.coverage = batchResult.coverage;
+        }
+      }
+    }
+
+    delete process.env.JEST_MAX_WORKERS;
+
+    logger.info(`  Batch run complete: ${mergedResults.passed} passed, ${mergedResults.failed} failed (${mergedResults.total} total)`);
+    return mergedResults;
   }
 
   /**
@@ -693,6 +909,48 @@ class UnitTestRunner {
         lines.push(`   Error: ${failure.error.split('\n')[0]}`);
         lines.push('');
       });
+    }
+
+    // Log missing packages that caused issues (Issue #4)
+    const missingPkgs = this._extractMissingNpmModules(results.errors || '', results.rawOutput || '');
+    if (missingPkgs.length > 0) {
+      lines.push('');
+      lines.push('⚠️ MISSING PACKAGES (causing test failures)');
+      lines.push('-'.repeat(100));
+      missingPkgs.forEach(pkg => {
+        lines.push(`   📦 ${pkg}`);
+      });
+      lines.push('');
+      lines.push(`   To fix: npm install --save-dev ${missingPkgs.join(' ')}`);
+      lines.push('');
+      
+      // Also write a dedicated missing-packages file for easy visibility
+      const pkgLogFile = path.join(logDir, 'missing-packages.log');
+      const pkgLogContent = [
+        `# Missing Packages Report (${new Date().toISOString()})`,
+        `# These packages are required but not installed, causing test failures.`,
+        '',
+        ...missingPkgs.map(p => p),
+        '',
+        `# Install command:`,
+        `npm install --save-dev ${missingPkgs.join(' ')}`
+      ].join('\n');
+      fs.writeFileSync(pkgLogFile, pkgLogContent, 'utf-8');
+      logger.warn(`⚠️ MISSING PACKAGES logged to: ${pkgLogFile}`);
+      logger.warn(`   Packages: ${missingPkgs.join(', ')}`);
+    }
+
+    // Warn about 0 test coverage
+    if (results.total === 0 && results.exitCode !== 0) {
+      lines.push('');
+      lines.push('⚠️ ZERO TESTS EXECUTED');
+      lines.push('-'.repeat(100));
+      lines.push('   Unit tests produced 0 coverage. Possible causes:');
+      lines.push('   1. Broken test files preventing Jest from loading the suite');
+      lines.push('   2. Missing transform configuration for TypeScript (.ts/.tsx)');
+      lines.push('   3. Missing dependencies (see MISSING PACKAGES above)');
+      lines.push('   4. Jest config incompatible with test file locations');
+      lines.push('');
     }
 
     lines.push('═'.repeat(100));
@@ -1009,6 +1267,42 @@ class UnitTestRunner {
             }
           }
         }
+
+        // Check transform dependencies (ts-jest, @swc/jest, babel-jest, etc.)
+        const transformMatch = configContent.match(/transform\s*:\s*\{([^}]*)\}/s);
+        if (transformMatch) {
+          const transformBlock = transformMatch[1];
+          const transformModules = transformBlock.match(/['"]([^'"]+)['"]\s*(?:\]|$)/g);
+          if (transformModules) {
+            for (const tm of transformModules) {
+              const mod = tm.replace(/['"[\]]/g, '').trim();
+              if (mod && !mod.startsWith('.') && !mod.startsWith('/') && !mod.includes('\\')) {
+                const pkgName = mod.startsWith('@') ? mod.split('/').slice(0, 2).join('/') : mod.split('/')[0];
+                if (!this._isModuleAvailable(pkgName, projectRoot)) {
+                  extraSetupFiles.push(`__transform_dep:${pkgName}`);
+                }
+              }
+            }
+          }
+        }
+
+        // Check moduleNameMapper dependencies (identity-obj-proxy, etc.)
+        const mapperMatch = configContent.match(/moduleNameMapper\s*:\s*\{([^}]*)\}/s);
+        if (mapperMatch) {
+          const mapperBlock = mapperMatch[1];
+          const mapperModules = mapperBlock.match(/['"]([^'"./][^'"]*)['"]/g);
+          if (mapperModules) {
+            for (const mm of mapperModules) {
+              const mod = mm.replace(/['"]/g, '').trim();
+              if (mod && !mod.startsWith('<') && !mod.includes('$')) {
+                const pkgName = mod.startsWith('@') ? mod.split('/').slice(0, 2).join('/') : mod.split('/')[0];
+                if (!this._isModuleAvailable(pkgName, projectRoot)) {
+                  extraSetupFiles.push(`__mapper_dep:${pkgName}`);
+                }
+              }
+            }
+          }
+        }
       } catch {}
     }
 
@@ -1017,6 +1311,12 @@ class UnitTestRunner {
     const allSetupFiles = [...setupFiles, ...extraSetupFiles];
 
     for (const setupFile of allSetupFiles) {
+      // Handle special markers for transform/mapper dependencies
+      if (setupFile.startsWith('__transform_dep:') || setupFile.startsWith('__mapper_dep:')) {
+        missingModules.add(setupFile.split(':')[1]);
+        continue;
+      }
+
       const fullPath = path.join(projectRoot, setupFile);
       if (!fs.existsSync(fullPath)) continue;
 
@@ -1038,9 +1338,7 @@ class UnitTestRunner {
               : mod.split('/')[0];
 
             // Check if module resolves from the project
-            try {
-              require.resolve(pkgName, { paths: [projectRoot] });
-            } catch {
+            if (!this._isModuleAvailable(pkgName, projectRoot)) {
               missingModules.add(pkgName);
             }
           }
@@ -1053,6 +1351,18 @@ class UnitTestRunner {
     const toInstall = [...missingModules];
     logger.info(`Pre-test check: ${toInstall.length} missing test dep(s) detected: ${toInstall.join(', ')}`);
     await this._installMissingTestDeps(toInstall, projectRoot);
+  }
+
+  /**
+   * Check if an npm module is resolvable from a given directory.
+   */
+  _isModuleAvailable(moduleName, cwd) {
+    try {
+      require.resolve(moduleName, { paths: [cwd, path.join(cwd, 'node_modules')] });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -1096,7 +1406,8 @@ class UnitTestRunner {
 
     const strategies = [
       { cmd: `npm install --save-dev ${toInstall.join(' ')}`, desc: 'devDep' },
-      { cmd: `npm install --no-save ${toInstall.join(' ')}`, desc: 'no-save' }
+      { cmd: `npm install --no-save ${toInstall.join(' ')}`, desc: 'no-save' },
+      { cmd: `npm install -g ${toInstall.join(' ')}`, desc: 'global' }
     ];
 
     for (const strategy of strategies) {

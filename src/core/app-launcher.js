@@ -52,6 +52,9 @@ class AppLauncher {
 
     logger.info(`Starting app: "${startCommand}" on port ${this.port}`);
 
+    // Kill any process using the target port before starting (prevents "port in use" errors across iterations)
+    await this._killPortProcess(this.port);
+
     // Retry loop
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       logger.info(`Startup attempt ${attempt}/${MAX_RETRIES}`);
@@ -67,6 +70,10 @@ class AppLauncher {
         }
       } catch (err) {
         logger.warn(`Attempt ${attempt} failed: ${err.message}`);
+        // If port is in use, kill whatever is using it before retrying
+        if (err.message.includes('already in use')) {
+          await this._killPortProcess(this.port);
+        }
       }
 
       // Kill any leftover process before retrying
@@ -295,6 +302,27 @@ class AppLauncher {
       this.process = null;
       this.pid = null;
     }
+  }
+
+  /**
+   * Kill any process occupying the specified port.
+   * Uses lsof (Linux/Mac) or netstat (Windows) to find and kill.
+   */
+  async _killPortProcess(port) {
+    return new Promise((resolve) => {
+      // Linux/Docker: use fuser or lsof to find and kill process on port
+      const killCmd = process.platform === 'win32'
+        ? `for /f "tokens=5" %a in ('netstat -aon ^| find ":${port}" ^| find "LISTENING"') do taskkill /F /PID %a`
+        : `lsof -ti :${port} | xargs -r kill -9 2>/dev/null || fuser -k ${port}/tcp 2>/dev/null || true`;
+
+      exec(killCmd, { timeout: 10000, shell: true }, (err, stdout, stderr) => {
+        if (!err && stdout.trim()) {
+          logger.info(`Killed process(es) using port ${port}`);
+        }
+        // Wait a moment for the port to be released
+        setTimeout(resolve, 1000);
+      });
+    });
   }
 
   getUrl() {

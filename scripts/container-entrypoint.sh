@@ -166,6 +166,22 @@ git config --global user.name "IGNIS Automation Agent" 2>/dev/null || true
 # Mark workspace as safe directory for git
 git config --global --add safe.directory "${REPO_PATH}" 2>/dev/null || true
 
+# Ensure npm can write to workspace (node_modules, generated-tests, logs)
+# GitHub Actions mounts workspace as root:root — ensure pwuser can write
+if [ ! -w "${REPO_PATH}" ]; then
+  echo "⚠️ Workspace not writable, adjusting permissions..."
+  # Try to make writable (will work if running as root or with sudo)
+  chmod -R a+w "${REPO_PATH}" 2>/dev/null || true
+fi
+
+# Create directories that the agent will write to
+mkdir -p "${REPO_PATH}/logs" "${REPO_PATH}/generated-tests" "${REPO_PATH}/test-results" "${REPO_PATH}/reports" 2>/dev/null || true
+
+# Ensure npm global prefix is writable for installing test dependencies
+export NPM_CONFIG_PREFIX="/tmp/.npm-global"
+export PATH="${NPM_CONFIG_PREFIX}/bin:${PATH}"
+mkdir -p "${NPM_CONFIG_PREFIX}" 2>/dev/null || true
+
 # Configure git credentials for push/PR at LOCAL repo level
 # Local config overrides whatever actions/checkout stored in .git/config
 PUSH_TOKEN="${GITHUB_PAT:-$GITHUB_TOKEN}"

@@ -79,9 +79,8 @@ CONTRIBUTING.md
 **/*.bak
 **/*.old
 
-# Test and demo apps (if you don't need them in production)
-# Uncomment if test-demo-app should not be in container:
-# **/test-demo-app
+# Test and demo apps (not needed in production)
+**/test-demo-app
 
 # GitHub workflows (not needed in container)
 **/.github

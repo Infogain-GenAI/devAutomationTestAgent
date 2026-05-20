@@ -31,13 +31,21 @@ class ClaudeProvider extends BaseAIProvider {
   }
 
   async generateTests(analysisResult, testType, framework) {
-    const systemPrompt = this._buildSystemPrompt('generate-tests');
-    
     // Build context-aware instructions
     let instructions = '';
     const isChunked = !!analysisResult.chunkInfo;
     const isUnitTest = ['unit', 'integration'].includes(testType);
     const hasGaps = analysisResult.testGaps && analysisResult.testGaps.length > 0;
+
+    const systemPrompt = this._buildSystemPrompt('generate-tests', {
+      language: framework?.language || 'JavaScript/TypeScript',
+      framework: framework?.framework || 'Node.js',
+      testRunner: isUnitTest ? 'Jest' : 'Playwright',
+      moduleSystem: 'CommonJS (require/module.exports)',
+      testType,
+      isUnitTest,
+      fileExtension: isUnitTest ? 'test.js' : 'spec.js'
+    });
     
     if (isChunked) {
       instructions += `Generating tests for CHUNK: "${analysisResult.chunkInfo.name}" (${analysisResult.chunkInfo.totalScenarios} scenarios).\nGenerate ONLY tests for the scenarios provided. Be specific and comprehensive.\n\n`;

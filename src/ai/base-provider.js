@@ -1,5 +1,7 @@
 'use strict';
 
+const promptLoader = require('../utils/prompt-loader');
+
 /**
  * Abstract base class defining the AI provider interface.
  * All providers must implement these methods.
@@ -106,8 +108,32 @@ class BaseAIProvider {
 
   /**
    * Build a system prompt for the given task type.
+   * Tries to load from external template files first (config/prompts/),
+   * falls back to hardcoded prompts if template not found.
    */
-  _buildSystemPrompt(taskType) {
+  _buildSystemPrompt(taskType, context = {}) {
+    // Map task types to template file names
+    const templateMap = {
+      'generate-tests': 'system-generate-tests',
+      'analyze-failures': 'system-analyze-failures',
+      'generate-fix': 'system-generate-fix',
+      'surface': 'system-analyze-code',
+      'deep-dive': 'system-analyze-code'
+    };
+
+    const templateName = templateMap[taskType];
+    if (templateName) {
+      const templateContext = {
+        ...context,
+        phase: taskType,
+        isSurface: taskType === 'surface',
+        isDeepDive: taskType === 'deep-dive'
+      };
+      const rendered = promptLoader.load(templateName, templateContext);
+      if (rendered) return rendered;
+    }
+
+    // Fallback to hardcoded prompts
     const prompts = {
       'surface': `You are an expert code analyst. Analyze the provided codebase structure and return a JSON object with:
 - "criticalFiles": array of file paths that are most important for testing

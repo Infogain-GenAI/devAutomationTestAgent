@@ -89,42 +89,61 @@ class DependencyInstaller {
 
     logger.info(`Installing dependencies: ${cmd} (in ${workDir})`);
 
-    return new Promise((resolve, reject) => {
-      const [command, ...args] = cmd.split(' ');
-      const proc = spawn(command, args, {
-        cwd: workDir,
-        shell: true,
-        stdio: 'pipe',
-        timeout: INSTALL_TIMEOUT
-      });
+    // Override NODE_ENV to ensure devDependencies are installed (needed for test frameworks).
+    // In Docker containers NODE_ENV=production is set, which would skip devDeps.
+    const installEnv = { ...process.env, NODE_ENV: 'development' };
 
-      let stdout = '';
-      let stderr = '';
+    const runInstall = (installCmd) => {
+      return new Promise((resolve, reject) => {
+        const [command, ...args] = installCmd.split(' ');
+        const proc = spawn(command, args, {
+          cwd: workDir,
+          shell: true,
+          stdio: 'pipe',
+          timeout: INSTALL_TIMEOUT,
+          env: installEnv
+        });
 
-      proc.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
+        let stdout = '';
+        let stderr = '';
 
-      proc.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
+        proc.stdout.on('data', (data) => {
+          stdout += data.toString();
+        });
 
-      proc.on('close', (code) => {
-        if (code === 0) {
-          logger.info('Dependencies installed successfully');
-          resolve({ success: true, stdout, stderr });
-        } else {
-          const error = new Error(`Dependency installation failed (exit code ${code}): ${stderr.slice(-500)}`);
-          logger.error(error.message);
-          reject(error);
-        }
-      });
+        proc.stderr.on('data', (data) => {
+          stderr += data.toString();
+        });
 
-      proc.on('error', (err) => {
-        logger.error(`Failed to spawn install command: ${err.message}`);
-        reject(err);
+        proc.on('close', (code) => {
+          resolve({ code, stdout, stderr });
+        });
+
+        proc.on('error', (err) => {
+          reject(err);
+        });
       });
-    });
+    };
+
+    // Try the primary command first
+    let result = await runInstall(cmd);
+    
+    // If npm ci fails (stale lock file, integrity mismatch), fall back to npm install
+    if (result.code !== 0 && packageManager === 'npm' && cmd.includes('npm ci')) {
+      const ciError = result.stderr.slice(-300);
+      logger.warn(`npm ci failed: ${ciError}`);
+      logger.info('Falling back to npm install --include=dev...');
+      result = await runInstall('npm install --include=dev');
+    }
+
+    if (result.code === 0) {
+      logger.info('Dependencies installed successfully');
+      return { success: true, stdout: result.stdout, stderr: result.stderr };
+    } else {
+      const error = new Error(`Dependency installation failed (exit code ${result.code}): ${result.stderr.slice(-500)}`);
+      logger.error(error.message);
+      throw error;
+    }
   }
 
   /**
