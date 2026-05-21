@@ -308,7 +308,52 @@ class IssueFixer {
     }
 
     const fixedContent = originalContent.replace(fix.originalCode, fix.fixedCode);
+
+    // ── GUARDRAIL: Reject fixes that insert non-test code into spec/test files ──
+    const isTestFile = /\.(spec|test)\.(js|ts|jsx|tsx|mjs)$/.test(filePath);
+    if (isTestFile) {
+      // Reject fixes that introduce top-level exports (backend/API code) in test files
+      const newLines = fixedContent.split('\n');
+      const hasBackendCode = newLines.some(line => {
+        const trimmed = line.trim();
+        // Detect API route patterns being inserted into test files
+        return (
+          (trimmed.startsWith('export async function') || trimmed.startsWith('export function') || trimmed.startsWith('export default')) &&
+          !trimmed.includes('describe') && !trimmed.includes('test') && !trimmed.includes('it(')
+        );
+      });
+      if (hasBackendCode) {
+        logger.warn(`BLOCKED: Fix for ${fix.file} attempts to insert backend/export code into a test file`);
+        return { success: false, reason: 'Fix inserts non-test code (exports/API routes) into test file — rejected' };
+      }
+    }
+
     fs.writeFileSync(filePath, fixedContent, 'utf-8');
+
+    // ── GUARDRAIL: Syntax validation — ensure file still parses ──
+    const { execSync } = require('child_process');
+    try {
+      if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
+        execSync(`node --check "${filePath}"`, { stdio: 'pipe', timeout: 15000 });
+      } else if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
+        // For TypeScript, check for obvious syntax errors using a basic parse
+        // (Full tsc check is too expensive; look for common corruption indicators)
+        const corruptionPatterns = [
+          /^export\s+(async\s+)?function\s+(GET|POST|PUT|DELETE|PATCH)\s*\(/m,
+          /^import\s+.*from\s+['"]next/m,
+          /^import\s+.*from\s+['"]@\/app\//m
+        ];
+        for (const pattern of corruptionPatterns) {
+          if (pattern.test(fixedContent) && !pattern.test(originalContent)) {
+            throw new Error('Fix introduced backend route/import code into test file');
+          }
+        }
+      }
+    } catch (err) {
+      // Syntax check failed — revert
+      fs.writeFileSync(filePath, originalContent, 'utf-8');
+      return { success: false, reason: `Syntax validation failed: ${err.message.slice(0, 150)}` };
+    }
 
     // Quick validation: run only the failing test(s) if we can identify them
     if (config.appUrl) {

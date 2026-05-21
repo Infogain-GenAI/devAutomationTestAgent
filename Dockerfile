@@ -47,6 +47,7 @@ RUN git config --global user.email "sumit.joshi@infogain.com" && \
     git config --global init.defaultBranch main
 
 # Environment defaults for production
+# Headless mode vars ensure Playwright runs without a display server in CI
 ENV NODE_ENV=production \
     PORT=4000 \
     LOG_LEVEL=info \
@@ -58,7 +59,12 @@ ENV NODE_ENV=production \
     GENERATE_ANALYSIS_REPORT=true \
     REPORT_OUTPUT_DIR=/app/reports \
     ANALYSIS_PROMPT_FILE=/app/config/analysis-prompts.json \
-    DOCKER_CONTAINER=true
+    DOCKER_CONTAINER=true \
+    HEADLESS=true \
+    CI=true \
+    PLAYWRIGHT_HEADLESS=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    DISPLAY=
 
 # Health check for container orchestration (API server mode)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

@@ -159,6 +159,13 @@ export LOG_DIR="${REPO_PATH}/logs"
 echo "📝 Logs will be written to: ${LOG_DIR}"
 echo ""
 
+# ── Headless mode enforcement (no display server in CI) ──
+export HEADLESS=true
+export CI=true
+export PLAYWRIGHT_HEADLESS=1
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/ms-playwright}"
+export DISPLAY=""
+
 # Ensure git identity is configured (safety net)
 git config --global user.email "ignis-agent@automated.dev" 2>/dev/null || true
 git config --global user.name "IGNIS Automation Agent" 2>/dev/null || true

@@ -294,24 +294,31 @@ class UnitTestRunner {
     // First attempt: use project's jest config
     let results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
 
-    // Handle OOM (exit code 134/137 = SIGKILL/SIGABRT) — retry without coverage
+    // Handle OOM (exit code 134/137 = SIGKILL/SIGABRT)
+    // Strategy: project config with heavy transforms (Next.js/SWC) often causes OOM on CI runners.
+    // Instead of retrying the same heavy config repeatedly, switch to a lightweight config immediately.
     if (results.exitCode === 134 || results.exitCode === 137) {
-      logger.warn(`Jest was killed (exit code ${results.exitCode}) — likely OOM. Retrying without --coverage...`);
+      logger.warn(`Jest was killed (exit code ${results.exitCode}) — likely OOM from heavy transforms (Next.js/SWC).`);
+      logger.warn('Switching to lightweight config with @swc/jest (skips project jest.config.js)...');
+      
+      // Skip the project config entirely — it's too memory-hungry
+      // Use a lightweight fallback that handles TypeScript without heavy bundler transforms
       process.env.JEST_COVERAGE = 'false';
-      results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+      const lightweightConfig = await this._createLightweightJestConfig(jestCwd, dirs);
+      results = await this._executeJest(framework, lightweightConfig, jestCwd, dirs);
 
-      // If STILL OOM even without coverage, reduce parallelism to 1 worker
+      // If still OOM with lightweight config, try --runInBand (serial, single process)
       if (results.exitCode === 134 || results.exitCode === 137) {
-        logger.warn(`Jest STILL OOM (exit code ${results.exitCode}) without coverage. Retrying with --maxWorkers=1...`);
+        logger.warn('Still OOM with lightweight config. Trying --runInBand...');
         process.env.JEST_MAX_WORKERS = '1';
-        results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
+        results = await this._executeJest(framework, lightweightConfig, jestCwd, dirs);
         delete process.env.JEST_MAX_WORKERS;
+      }
 
-        // If STILL OOM with 1 worker, try running in batches (split dirs)
-        if ((results.exitCode === 134 || results.exitCode === 137) && dirs.length > 1) {
-          logger.warn('Jest OOM even with 1 worker. Running test directories in batches...');
-          results = await this._executeJestInBatches(framework, jestConfigPath, jestCwd, dirs);
-        }
+      // If STILL OOM, try individual files in batches with lightweight config
+      if ((results.exitCode === 134 || results.exitCode === 137) && dirs.length > 1) {
+        logger.warn('OOM persists. Running directories in batches with lightweight config...');
+        results = await this._executeJestInBatches(framework, lightweightConfig, jestCwd, dirs);
       }
 
       delete process.env.JEST_COVERAGE;
@@ -462,7 +469,7 @@ class UnitTestRunner {
         }
         // Limit workers if OOM occurred previously
         if (process.env.JEST_MAX_WORKERS) {
-          args.push('--maxWorkers', process.env.JEST_MAX_WORKERS);
+          args.push('--maxWorkers', process.env.JEST_MAX_WORKERS, '--runInBand');
         }
         if (configPath) {
           const relConfigPath = path.relative(cwd, configPath);
@@ -544,11 +551,19 @@ class UnitTestRunner {
         ? ['jest', ...args]
         : ['mocha', ...args];
 
+      // Set increased memory limit for Jest (Next.js/SWC transforms are memory-hungry)
+      const jestEnv = { ...process.env };
+      const currentNodeOptions = jestEnv.NODE_OPTIONS || '';
+      if (!currentNodeOptions.includes('--max-old-space-size')) {
+        jestEnv.NODE_OPTIONS = `${currentNodeOptions} --max-old-space-size=4096`.trim();
+      }
+
       const proc = spawn('npx', fullArgs, {
         cwd,
         shell: true,
         stdio: 'pipe',
-        timeout: 5 * 60 * 1000
+        timeout: 5 * 60 * 1000,
+        env: jestEnv
       });
 
       let stdout = '';
@@ -1363,6 +1378,100 @@ class UnitTestRunner {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Create a lightweight Jest config for projects where the native jest.config.js causes OOM.
+   * Uses @swc/jest (fast, low-memory TypeScript transform) instead of Next.js/Babel transforms.
+   * Returns the path to the created config file.
+   */
+  async _createLightweightJestConfig(cwd, dirs) {
+    const { execSync } = require('child_process');
+    const configPath = path.join(cwd, '.jest.lightweight.config.json');
+
+    // Ensure @swc/jest is available (much lighter than ts-jest or next/jest)
+    if (!this._isModuleAvailable('@swc/jest', cwd)) {
+      logger.info('Installing @swc/jest for lightweight TypeScript transform...');
+      try {
+        execSync('npm install --save-dev @swc/jest @swc/core', {
+          cwd, stdio: 'pipe', timeout: 120000,
+          env: { ...process.env, NODE_ENV: 'development' }
+        });
+        logger.info('✅ @swc/jest installed');
+      } catch (err) {
+        logger.warn(`Failed to install @swc/jest locally: ${err.message.slice(0, 100)}`);
+        // Try global install as fallback
+        try {
+          execSync('npm install -g @swc/jest @swc/core', { stdio: 'pipe', timeout: 120000 });
+          logger.info('✅ @swc/jest installed globally');
+        } catch {
+          logger.warn('Could not install @swc/jest — falling back to no transform');
+        }
+      }
+    }
+
+    // Determine transform based on what's available
+    let transform = {};
+    if (this._isModuleAvailable('@swc/jest', cwd)) {
+      transform = {
+        '^.+\\.(t|j)sx?$': ['@swc/jest', {
+          jsc: {
+            parser: { syntax: 'typescript', tsx: true, decorators: true },
+            transform: { react: { runtime: 'automatic' } }
+          }
+        }]
+      };
+    } else if (this._isModuleAvailable('ts-jest', cwd)) {
+      transform = { '^.+\\.tsx?$': 'ts-jest' };
+    }
+
+    // Build moduleNameMapper for common Next.js path aliases
+    const moduleNameMapper = {};
+    const tsConfigPath = path.join(cwd, 'tsconfig.json');
+    if (fs.existsSync(tsConfigPath)) {
+      try {
+        const tsContent = fs.readFileSync(tsConfigPath, 'utf-8')
+          .replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''); // strip comments
+        const tsConfig = JSON.parse(tsContent);
+        const paths = tsConfig.compilerOptions?.paths || {};
+        for (const [alias, targets] of Object.entries(paths)) {
+          const jestAlias = '^' + alias.replace('/*', '/(.*)');
+          const target = targets[0].replace('/*', '/$1').replace('./', '<rootDir>/');
+          moduleNameMapper[jestAlias] = target;
+        }
+      } catch {}
+    }
+    // Common Next.js aliases
+    if (!moduleNameMapper['^@/(.*)']) {
+      moduleNameMapper['^@/(.*)'] = '<rootDir>/src/$1';
+    }
+
+    // Mock static assets and CSS
+    moduleNameMapper['\\.(css|less|scss|sass)$'] = '<rootDir>/__mocks__/styleMock.js';
+    moduleNameMapper['\\.(jpg|jpeg|png|gif|svg|webp)$'] = '<rootDir>/__mocks__/fileMock.js';
+
+    // Create mock files if they don't exist
+    const mocksDir = path.join(cwd, '__mocks__');
+    if (!fs.existsSync(mocksDir)) fs.mkdirSync(mocksDir, { recursive: true });
+    const styleMock = path.join(mocksDir, 'styleMock.js');
+    const fileMock = path.join(mocksDir, 'fileMock.js');
+    if (!fs.existsSync(styleMock)) fs.writeFileSync(styleMock, 'module.exports = {};');
+    if (!fs.existsSync(fileMock)) fs.writeFileSync(fileMock, 'module.exports = "test-file-stub";');
+
+    const config = {
+      testEnvironment: 'node',
+      transform,
+      moduleNameMapper,
+      transformIgnorePatterns: ['/node_modules/(?!(@t3-oss|next|@next)/)'],
+      testPathIgnorePatterns: ['/node_modules/', '\\.spec\\.'],
+      moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
+      maxWorkers: 1,
+      silent: true
+    };
+
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    logger.info(`Created lightweight Jest config: ${path.basename(configPath)}`);
+    return configPath;
   }
 
   /**

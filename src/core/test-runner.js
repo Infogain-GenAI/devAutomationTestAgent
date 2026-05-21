@@ -88,7 +88,9 @@ class TestRunner {
           ...process.env,
           APP_URL: config.appUrl || process.env.APP_URL || 'http://localhost:3000',
           CI: 'true',
+          HEADLESS: 'true',
           PLAYWRIGHT_HEADLESS: '1',
+          PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright',
           DISPLAY: process.env.DISPLAY || ''
         }
       });
