@@ -294,10 +294,12 @@ class UnitTestRunner {
     // First attempt: use project's jest config
     let results = await this._executeJest(framework, jestConfigPath, jestCwd, dirs);
 
-    // Handle OOM (exit code 134/137 = SIGKILL/SIGABRT)
+    // Handle OOM — exit code 134 (SIGABRT), 137 (SIGKILL), or null (signal-killed process)
     // Strategy: project config with heavy transforms (Next.js/SWC) often causes OOM on CI runners.
     // Instead of retrying the same heavy config repeatedly, switch to a lightweight config immediately.
-    if (results.exitCode === 134 || results.exitCode === 137) {
+    const isOOM = (code) => code === 134 || code === 137 || code === null;
+    
+    if (isOOM(results.exitCode)) {
       logger.warn(`Jest was killed (exit code ${results.exitCode}) — likely OOM from heavy transforms (Next.js/SWC).`);
       logger.warn('Switching to lightweight config with @swc/jest (skips project jest.config.js)...');
       
@@ -308,7 +310,7 @@ class UnitTestRunner {
       results = await this._executeJest(framework, lightweightConfig, jestCwd, dirs);
 
       // If still OOM with lightweight config, try --runInBand (serial, single process)
-      if (results.exitCode === 134 || results.exitCode === 137) {
+      if (isOOM(results.exitCode)) {
         logger.warn('Still OOM with lightweight config. Trying --runInBand...');
         process.env.JEST_MAX_WORKERS = '1';
         results = await this._executeJest(framework, lightweightConfig, jestCwd, dirs);
@@ -316,7 +318,7 @@ class UnitTestRunner {
       }
 
       // If STILL OOM, try individual files in batches with lightweight config
-      if ((results.exitCode === 134 || results.exitCode === 137) && dirs.length > 1) {
+      if (isOOM(results.exitCode) && dirs.length > 1) {
         logger.warn('OOM persists. Running directories in batches with lightweight config...');
         results = await this._executeJestInBatches(framework, lightweightConfig, jestCwd, dirs);
       }
@@ -402,11 +404,13 @@ class UnitTestRunner {
             results = await this._executeJestExcluding(framework, jestConfigPath, jestCwd, dirs, brokenPaths);
           }
           
-          // If STILL 0 tests, fall back to no config (node env)
-          if (results.exitCode !== 0 && results.total === 0) {
-            logger.warn(`Still 0 tests with exclusions. Falling back to basic node config...`);
-            logger.info('Retrying without project jest.config.js...');
-            results = await this._executeJest(framework, null, jestCwd, dirs);
+          // If STILL 0 tests, fall back to lightweight config with @swc/jest
+          if ((results.exitCode !== 0 && results.total === 0) || isOOM(results.exitCode)) {
+            logger.warn(`Still 0 tests with exclusions (exit code ${results.exitCode}). Switching to lightweight @swc/jest config...`);
+            const lightweightConfig = await this._createLightweightJestConfig(jestCwd, dirs);
+            process.env.JEST_COVERAGE = 'false';
+            results = await this._executeJest(framework, lightweightConfig, jestCwd, dirs);
+            delete process.env.JEST_COVERAGE;
           }
         } else {
           // No broken spec files identified — likely a config/transform issue
@@ -418,8 +422,11 @@ class UnitTestRunner {
             logger.warn(`⚠️ MISSING PACKAGES: ${missingPackages.join(', ')}`);
           }
           
-          logger.info('Retrying without project jest.config.js...');
-          results = await this._executeJest(framework, null, jestCwd, dirs);
+          logger.info('Switching to lightweight @swc/jest config...');
+          const lightweightConfig = await this._createLightweightJestConfig(jestCwd, dirs);
+          process.env.JEST_COVERAGE = 'false';
+          results = await this._executeJest(framework, lightweightConfig, jestCwd, dirs);
+          delete process.env.JEST_COVERAGE;
         }
       }
     }
@@ -557,6 +564,14 @@ class UnitTestRunner {
       if (!currentNodeOptions.includes('--max-old-space-size')) {
         jestEnv.NODE_OPTIONS = `${currentNodeOptions} --max-old-space-size=4096`.trim();
       }
+      // Ensure globally-installed test packages (@swc/jest, ts-jest) are resolvable by Jest
+      try {
+        const globalRoot = require('child_process').execSync('npm root -g', { encoding: 'utf-8', timeout: 5000 }).trim();
+        const existingNodePath = jestEnv.NODE_PATH || '';
+        if (!existingNodePath.includes(globalRoot)) {
+          jestEnv.NODE_PATH = existingNodePath ? `${existingNodePath}:${globalRoot}` : globalRoot;
+        }
+      } catch {}
 
       const proc = spawn('npx', fullArgs, {
         cwd,
@@ -1373,10 +1388,25 @@ class UnitTestRunner {
    */
   _isModuleAvailable(moduleName, cwd) {
     try {
+      // Check local node_modules first
       require.resolve(moduleName, { paths: [cwd, path.join(cwd, 'node_modules')] });
       return true;
     } catch {
-      return false;
+      // Also check global installs (Docker container has packages installed globally)
+      try {
+        require.resolve(moduleName);
+        return true;
+      } catch {
+        // Try finding via npm global prefix
+        try {
+          const { execSync } = require('child_process');
+          const globalDir = execSync('npm root -g', { encoding: 'utf-8', timeout: 5000 }).trim();
+          require.resolve(moduleName, { paths: [globalDir] });
+          return true;
+        } catch {
+          return false;
+        }
+      }
     }
   }
 
