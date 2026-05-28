@@ -4,10 +4,12 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
 const BaseSubAgent = require('./base-sub-agent');
+const UnitTestPipeline = require('../core/unit-test-pipeline');
+const AutomationTestPipeline = require('../core/automation-test-pipeline');
 
 /**
  * Execution Agent (Test Runner & Coverage) — Responsible for:
- * - Unit test execution with coverage measurement
+ * - Unit test execution with coverage measurement (via UnitTestPipeline)
  * - Automation (Playwright) test execution with coverage measurement
  * - Coverage report generation
  * - Detailed log generation per test file
@@ -24,11 +26,29 @@ class ExecutionAgent extends BaseSubAgent {
     this.reportGenerator = dependencies.reportGenerator;
     this.repoManager = dependencies.repoManager;
     this.testCoverageScanner = dependencies.testCoverageScanner;
+
+    // Initialize the new Unit Test Pipeline
+    this.unitTestPipeline = new UnitTestPipeline(config, {
+      aiProvider: dependencies.aiProvider,
+      codeGenProvider: dependencies.codeGenProvider,
+      unitTestRunner: dependencies.unitTestRunner
+    });
+
+    // Initialize the new Automation Test Pipeline
+    this.automationTestPipeline = new AutomationTestPipeline(config, {
+      aiProvider: dependencies.aiProvider,
+      codeGenProvider: dependencies.codeGenProvider,
+      testRunner: dependencies.testRunner,
+      issueFixer: dependencies.issueFixer
+    });
   }
 
   /**
    * Run a single iteration of the execution agent.
    * Each iteration: run tests → measure coverage → if below threshold, fix and re-run.
+   * 
+   * On iteration 0: Uses the full UnitTestPipeline (API docs → generate → verify → run → fix).
+   * On iteration 1+: Re-runs existing tests and applies fixes.
    */
   async _runIteration(context, iteration, previousResult = null) {
     const { workDir, techStack, codeAnalysis, appUrl, existingTests } = context;
@@ -37,11 +57,81 @@ class ExecutionAgent extends BaseSubAgent {
 
     // ── Phase 1: Unit Test Execution ────────────────────────────
     logger.info(`[execution] Phase 1: Unit Test Execution (iteration ${iteration + 1})`);
-    let unitTestResults = await this._runUnitTests(context, previousResult);
+    let unitTestResults;
+
+    if (iteration === 0) {
+      // First iteration: use the full Unit Test Pipeline
+      // (generates API docs, creates tests in chunks, verifies, runs, fixes)
+      try {
+        logger.info('[execution] Using UnitTestPipeline (API docs → generate → verify → run → fix)');
+        const pipelineResult = await this.unitTestPipeline.execute({
+          workDir,
+          techStack,
+          codeAnalysis,
+          existingTests
+        });
+        unitTestResults = {
+          framework: pipelineResult.framework || 'jest',
+          passed: pipelineResult.passed || 0,
+          failed: pipelineResult.failed || 0,
+          total: pipelineResult.total || 0,
+          skipped: pipelineResult.skipped || 0,
+          coverage: pipelineResult.coverage || 0,
+          exitCode: pipelineResult.exitCode,
+          errors: pipelineResult.errors || '',
+          rawOutput: pipelineResult.rawOutput || ''
+        };
+        if (pipelineResult.report) {
+          artifacts.push({ type: 'unit-test-report', path: pipelineResult.report.reportPath, description: 'Unit test pipeline report' });
+        }
+      } catch (err) {
+        logger.error(`[execution] UnitTestPipeline failed: ${err.message}`);
+        logger.info('[execution] Falling back to standard unit test runner...');
+        unitTestResults = await this._runUnitTests(context, previousResult);
+      }
+    } else {
+      // Subsequent iterations: just re-run tests (fixes already applied)
+      unitTestResults = await this._runUnitTests(context, previousResult);
+    }
 
     // ── Phase 2: Automation Test Execution ──────────────────────
     logger.info(`[execution] Phase 2: Automation Test Execution (iteration ${iteration + 1})`);
-    let automationTestResults = await this._runAutomationTests(context, previousResult);
+    let automationTestResults;
+
+    if (iteration === 0) {
+      // Full pipeline on first iteration (generation + verification + execution + fixing)
+      try {
+        logger.info('[execution] Using AutomationTestPipeline for comprehensive E2E/API test coverage...');
+        const pipelineResult = await this.automationTestPipeline.execute({
+          workDir,
+          techStack,
+          codeAnalysis,
+          apiDocumentation: codeAnalysis.apiDocumentation || {},
+          appUrl: appUrl || process.env.APP_URL || 'http://localhost:3000'
+        });
+        automationTestResults = {
+          framework: 'playwright',
+          passed: pipelineResult.passed || 0,
+          failed: pipelineResult.failed || 0,
+          total: pipelineResult.total || 0,
+          skipped: pipelineResult.skipped || 0,
+          coverage: pipelineResult.coverage || 0,
+          exitCode: pipelineResult.exitCode,
+          errors: pipelineResult.errors || '',
+          generatedTests: pipelineResult.generatedFiles || 0
+        };
+        if (pipelineResult.report) {
+          artifacts.push({ type: 'automation-test-report', path: pipelineResult.report.reportPath, description: 'Automation test pipeline report' });
+        }
+      } catch (err) {
+        logger.error(`[execution] AutomationTestPipeline failed: ${err.message}`);
+        logger.info('[execution] Falling back to standard automation test runner...');
+        automationTestResults = await this._runAutomationTests(context, previousResult);
+      }
+    } else {
+      // Subsequent iterations: just re-run tests (fixes already applied)
+      automationTestResults = await this._runAutomationTests(context, previousResult);
+    }
 
     // ── Phase 3: Coverage Assessment ────────────────────────────
     const unitCoverage = this._extractCoverage(unitTestResults, 'unit');
