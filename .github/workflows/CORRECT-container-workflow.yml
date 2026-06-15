@@ -7,6 +7,8 @@ on:
   push:
     branches:
       - '**'
+    branches-ignore:
+      - 'ignis/**'
   workflow_dispatch:
     inputs:
       branch:
@@ -81,24 +83,33 @@ on:
           - 'true'
 
 # ============================================================================
-# SECRETS & VARIABLES REQUIRED
+# SECRETS & VARIABLES REQUIRED (All prefixed with ATA_ to avoid conflicts)
 # ============================================================================
 # Repository Secrets (Settings → Secrets and variables → Actions → Secrets):
-#   - ACR_REGISTRY_URL    : Azure Container Registry URL (e.g., myregistry.azurecr.io)
-#   - ACR_USERNAME        : ACR username / service principal client ID
-#   - ACR_PASSWORD        : ACR password / service principal client secret
-#   - AI_API_KEY          : AI provider API key (OpenAI/Claude/Gemini)
-#   - CODE_GENERATION_CLAUDE_API_KEY : (Optional) Separate Claude key for code generation
-#   - APP_SECRETS         : (Optional) JSON string of app environment variables
+#   - ATA_ACR_REGISTRY_URL    : Azure Container Registry URL (e.g., myregistry.azurecr.io)
+#   - ATA_ACR_USERNAME        : ACR username / service principal client ID
+#   - ATA_ACR_PASSWORD        : ACR password / service principal client secret
+#   - ATA_AI_API_KEY          : AI provider API key (OpenAI/Claude/Gemini)
+#   - ATA_OPENAI_API_KEY      : (Optional) Separate OpenAI key
+#   - ATA_CLAUDE_API_KEY      : (Optional) Separate Claude key
+#   - ATA_GEMINI_API_KEY      : (Optional) Separate Gemini key
+#   - ATA_CODE_GENERATION_CLAUDE_API_KEY : (Optional) Separate Claude key for code generation
+#   - ATA_APP_SECRETS         : (Optional) JSON string of app environment variables
+#   - ATA_GITHUB_PAT          : GitHub Personal Access Token for PR creation
 #
 # Repository Variables (Settings → Secrets and variables → Actions → Variables):
-#   - ACR_IMAGE_NAME      : Container image name (default: automationtestagent)
-#   - ACR_IMAGE_TAG       : Image tag (default: latest)
-#   - AI_PROVIDER         : Default AI provider (default: openai)
-#   - TEST_TYPES          : Default test types (default: unit,e2e,api)
-#   - AUTO_START_APP      : Auto-start flag (default: true)
-#   - COVERAGE_THRESHOLD  : Target coverage % (default: 95)
-#   - SUB_AGENT_MAX_ITERATIONS : Max sub-agent iterations (default: 5)
+#   - ATA_ACR_IMAGE_NAME      : Container image name (default: automationtestagent)
+#   - ATA_ACR_IMAGE_TAG       : Image tag (default: latest)
+#   - ATA_AI_PROVIDER         : Default AI provider (default: openai)
+#   - ATA_TEST_TYPES          : Default test types (default: unit,e2e,api)
+#   - ATA_AUTO_START_APP      : Auto-start flag (default: true)
+#   - ATA_COVERAGE_THRESHOLD  : Target coverage % (default: 95)
+#   - ATA_MAX_ITERATIONS      : Max main pipeline iterations (default: 3)
+#   - ATA_SUB_AGENT_MAX_ITERATIONS : Max sub-agent iterations (default: 5)
+#   - ATA_APP_URL             : Target application URL (optional)
+#   - ATA_APP_START_COMMAND   : Custom app start command (optional)
+#   - ATA_LOG_LEVEL           : Log level (default: info)
+#   - ATA_CODE_GENERATION_CLAUDE_MODEL : Claude model for code gen (default: claude-sonnet-4-20250514)
 #
 # ============================================================================
 # PERMISSIONS REQUIRED
@@ -132,21 +143,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || github.ref }}
-          token: ${{ secrets.MY_GITHUB_PAT }}
+          token: ${{ secrets.ATA_GITHUB_PAT }}
           persist-credentials: true
 
       - name: Login to Azure Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.ACR_REGISTRY_URL }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+          registry: ${{ secrets.ATA_ACR_REGISTRY_URL }}
+          username: ${{ secrets.ATA_ACR_USERNAME }}
+          password: ${{ secrets.ATA_ACR_PASSWORD }}
 
       - name: Pull IGNIS Automation Agent Image
         run: |
-          ACR_REGISTRY="${{ secrets.ACR_REGISTRY_URL }}"
-          IMAGE_NAME="${{ vars.ACR_IMAGE_NAME || 'automationtestagent' }}"
-          IMAGE_TAG="${{ vars.ACR_IMAGE_TAG || 'latest' }}"
+          ACR_REGISTRY="${{ secrets.ATA_ACR_REGISTRY_URL }}"
+          IMAGE_NAME="${{ vars.ATA_ACR_IMAGE_NAME || 'automationtestagent' }}"
+          IMAGE_TAG="${{ vars.ATA_ACR_IMAGE_TAG || 'latest' }}"
           FULL_IMAGE="${ACR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
           
           echo "🐳 Pulling container image: ${FULL_IMAGE}"
@@ -169,9 +180,9 @@ jobs:
       - name: Run IGNIS Automation Test Agent
         id: run-agent
         run: |
-          ACR_REGISTRY="${{ secrets.ACR_REGISTRY_URL }}"
-          IMAGE_NAME="${{ vars.ACR_IMAGE_NAME || 'automationtestagent' }}"
-          IMAGE_TAG="${{ vars.ACR_IMAGE_TAG || 'latest' }}"
+          ACR_REGISTRY="${{ secrets.ATA_ACR_REGISTRY_URL }}"
+          IMAGE_NAME="${{ vars.ATA_ACR_IMAGE_NAME || 'automationtestagent' }}"
+          IMAGE_TAG="${{ vars.ATA_ACR_IMAGE_TAG || 'latest' }}"
           FULL_IMAGE="${ACR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
           
           echo "════════════════════════════════════════════════════════════════════════"
@@ -181,10 +192,10 @@ jobs:
           echo "📦 Image:        ${FULL_IMAGE}"
           echo "📁 Workspace:    ${{ github.workspace }}"
           echo "🌿 Branch:       ${{ github.event.inputs.branch || github.ref_name }}"
-          echo "🤖 AI Provider:  ${{ github.event.inputs.ai-provider || vars.AI_PROVIDER || 'openai' }}"
-          echo "🧪 Test Types:   ${{ github.event.inputs.test-types || vars.TEST_TYPES || 'unit,e2e,api' }}"
-          echo "🔄 Iterations:   ${{ github.event.inputs.max-iterations || vars.MAX_ITERATIONS || '3' }}"
-          echo "🎯 Coverage:     ${{ github.event.inputs.coverage-threshold || vars.COVERAGE_THRESHOLD || '95' }}%"
+          echo "🤖 AI Provider:  ${{ github.event.inputs.ai-provider || vars.ATA_AI_PROVIDER || 'openai' }}"
+          echo "🧪 Test Types:   ${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }}"
+          echo "🔄 Iterations:   ${{ github.event.inputs.max-iterations || vars.ATA_MAX_ITERATIONS || '3' }}"
+          echo "🎯 Coverage:     ${{ github.event.inputs.coverage-threshold || vars.ATA_COVERAGE_THRESHOLD || '95' }}%"
           echo "📋 Run Mode:     ${{ github.event.inputs.run-mode || 'full' }}"
           echo "🔧 Run Agent:    ${{ github.event.inputs.run-agent || 'N/A' }}"
           echo ""
@@ -200,29 +211,29 @@ jobs:
             -v "${{ github.workspace }}:/workspace" \
             -e REPO_PATH="/workspace" \
             -e REPO_BRANCH="${{ github.event.inputs.branch || github.ref_name }}" \
-            -e GITHUB_TOKEN="${{ secrets.MY_GITHUB_PAT || github.token }}" \
-            -e GITHUB_PAT="${{ secrets.MY_GITHUB_PAT || '' }}" \
+            -e GITHUB_TOKEN="${{ secrets.ATA_GITHUB_PAT || github.token }}" \
+            -e GITHUB_PAT="${{ secrets.ATA_GITHUB_PAT || '' }}" \
             -e GITHUB_WORKSPACE="/workspace" \
             -e GITHUB_REPOSITORY="${{ github.repository }}" \
-            -e AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.AI_PROVIDER || 'openai' }}" \
-            -e AI_API_KEY="${{ secrets.AI_API_KEY }}" \
-            -e OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY || secrets.AI_API_KEY }}" \
-            -e CLAUDE_API_KEY="${{ secrets.CLAUDE_API_KEY || secrets.AI_API_KEY }}" \
-            -e GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY || secrets.AI_API_KEY }}" \
-            -e CODE_GENERATION_CLAUDE_API_KEY="${{ secrets.CODE_GENERATION_CLAUDE_API_KEY || '' }}" \
-            -e CODE_GENERATION_CLAUDE_MODEL="${{ vars.CODE_GENERATION_CLAUDE_MODEL || 'claude-sonnet-4-20250514' }}" \
+            -e AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.ATA_AI_PROVIDER || 'openai' }}" \
+            -e AI_API_KEY="${{ secrets.ATA_AI_API_KEY }}" \
+            -e OPENAI_API_KEY="${{ secrets.ATA_OPENAI_API_KEY || secrets.ATA_AI_API_KEY }}" \
+            -e CLAUDE_API_KEY="${{ secrets.ATA_CLAUDE_API_KEY || secrets.ATA_AI_API_KEY }}" \
+            -e GEMINI_API_KEY="${{ secrets.ATA_GEMINI_API_KEY || secrets.ATA_AI_API_KEY }}" \
+            -e CODE_GENERATION_CLAUDE_API_KEY="${{ secrets.ATA_CODE_GENERATION_CLAUDE_API_KEY || '' }}" \
+            -e CODE_GENERATION_CLAUDE_MODEL="${{ vars.ATA_CODE_GENERATION_CLAUDE_MODEL || 'claude-sonnet-4-20250514' }}" \
             -e RUN_MODE="${{ github.event.inputs.run-mode || 'full' }}" \
             -e RUN_AGENT="${{ github.event.inputs.run-agent || '' }}" \
-            -e MAX_ITERATIONS="${{ github.event.inputs.max-iterations || vars.MAX_ITERATIONS || '3' }}" \
-            -e SUB_AGENT_MAX_ITERATIONS="${{ github.event.inputs.sub-agent-max-iterations || vars.SUB_AGENT_MAX_ITERATIONS || '5' }}" \
-            -e COVERAGE_THRESHOLD="${{ github.event.inputs.coverage-threshold || vars.COVERAGE_THRESHOLD || '95' }}" \
-            -e TEST_TYPES="${{ github.event.inputs.test-types || vars.TEST_TYPES || 'unit,e2e,api' }}" \
-            -e APP_URL="${{ github.event.inputs.app-url || vars.APP_URL || '' }}" \
-            -e AUTO_START_APP="${{ github.event.inputs.auto-start-app || vars.AUTO_START_APP || 'true' }}" \
-            -e APP_START_COMMAND="${{ github.event.inputs.app-start-command || vars.APP_START_COMMAND || '' }}" \
-            -e APP_SECRETS="${{ secrets.APP_SECRETS || '' }}" \
+            -e MAX_ITERATIONS="${{ github.event.inputs.max-iterations || vars.ATA_MAX_ITERATIONS || '3' }}" \
+            -e SUB_AGENT_MAX_ITERATIONS="${{ github.event.inputs.sub-agent-max-iterations || vars.ATA_SUB_AGENT_MAX_ITERATIONS || '5' }}" \
+            -e COVERAGE_THRESHOLD="${{ github.event.inputs.coverage-threshold || vars.ATA_COVERAGE_THRESHOLD || '95' }}" \
+            -e TEST_TYPES="${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }}" \
+            -e APP_URL="${{ github.event.inputs.app-url || vars.ATA_APP_URL || '' }}" \
+            -e AUTO_START_APP="${{ github.event.inputs.auto-start-app || vars.ATA_AUTO_START_APP || 'true' }}" \
+            -e APP_START_COMMAND="${{ github.event.inputs.app-start-command || vars.ATA_APP_START_COMMAND || '' }}" \
+            -e APP_SECRETS="${{ secrets.ATA_APP_SECRETS || '' }}" \
             -e SKIP_PR="${{ github.event.inputs.skip-pr || 'false' }}" \
-            -e LOG_LEVEL="${{ vars.LOG_LEVEL || 'info' }}" \
+            -e LOG_LEVEL="${{ vars.ATA_LOG_LEVEL || 'info' }}" \
             -e NODE_ENV="production" \
             -e HEADLESS="true" \
             -e CI="true" \
@@ -427,7 +438,7 @@ jobs:
           echo "      • Check logs/error.log if it exists"
           echo ""
           echo "   4. 🔑 COMMON FIXES:"
-          echo "      • AI API Key Issues → Verify AI_API_KEY is valid (not expired)"
+          echo "      • AI API Key Issues → Verify ATA_AI_API_KEY is valid (not expired)"
           echo "      • App Won't Start → Check APP_START_COMMAND or set APP_URL"
           echo "      • Tests Don't Run → May need Playwright config adjustments"
           echo "      • PR Not Created → Now fixed with permissions! Re-run workflow"
@@ -525,14 +536,14 @@ jobs:
           echo "### ⚙️ Configuration" >> $GITHUB_STEP_SUMMARY
           echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| AI Provider | ${{ github.event.inputs.ai-provider || vars.AI_PROVIDER || 'openai' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Code-Gen Claude | ${{ secrets.CODE_GENERATION_CLAUDE_API_KEY && 'Active' || 'Not configured (using primary)' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| AI Provider | ${{ github.event.inputs.ai-provider || vars.ATA_AI_PROVIDER || 'openai' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Code-Gen Claude | ${{ secrets.ATA_CODE_GENERATION_CLAUDE_API_KEY && 'Active' || 'Not configured (using primary)' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Run Mode | ${{ github.event.inputs.run-mode || 'full' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Run Agent | ${{ github.event.inputs.run-agent || 'N/A (full pipeline)' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Coverage Threshold | ${{ github.event.inputs.coverage-threshold || vars.COVERAGE_THRESHOLD || '95' }}% |" >> $GITHUB_STEP_SUMMARY
-          echo "| Max Main Iterations | ${{ github.event.inputs.max-iterations || vars.MAX_ITERATIONS || '3' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Sub-Agent Max Iterations | ${{ github.event.inputs.sub-agent-max-iterations || vars.SUB_AGENT_MAX_ITERATIONS || '5' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Test Types | ${{ github.event.inputs.test-types || vars.TEST_TYPES || 'unit,e2e,api' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Coverage Threshold | ${{ github.event.inputs.coverage-threshold || vars.ATA_COVERAGE_THRESHOLD || '95' }}% |" >> $GITHUB_STEP_SUMMARY
+          echo "| Max Main Iterations | ${{ github.event.inputs.max-iterations || vars.ATA_MAX_ITERATIONS || '3' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Sub-Agent Max Iterations | ${{ github.event.inputs.sub-agent-max-iterations || vars.ATA_SUB_AGENT_MAX_ITERATIONS || '5' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Types | ${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Branch | ${{ github.event.inputs.branch || github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Skip PR | ${{ github.event.inputs.skip-pr || 'false' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -593,7 +604,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "1. Review the **Display Test Results** step for detailed output" >> $GITHUB_STEP_SUMMARY
             echo "2. Download artifacts to review logs locally" >> $GITHUB_STEP_SUMMARY
-            echo "3. Check that \`AI_API_KEY\` is valid in repository secrets" >> $GITHUB_STEP_SUMMARY
+            echo "3. Check that \`ATA_AI_API_KEY\` is valid in repository secrets" >> $GITHUB_STEP_SUMMARY
             echo "4. Verify application can start with provided configuration" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
