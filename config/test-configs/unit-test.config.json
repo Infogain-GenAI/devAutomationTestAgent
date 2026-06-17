@@ -1,0 +1,34 @@
+{
+  "name": "Unit Test Configuration",
+  "version": "1.0.0",
+  "createdAt": "2026-06-16T00:00:00.000Z",
+  "sourcePackageVersion": "2.0.0",
+  "framework": "jest",
+  "testCommand": "jest tests/unit",
+  "outputDir": "logs",
+  "coverage": {
+    "enabled": true,
+    "threshold": 80,
+    "types": [
+      "statements",
+      "branches",
+      "functions",
+      "lines"
+    ]
+  },
+  "timeout": 30000,
+  "parallel": true,
+  "maxWorkers": 4,
+  "environment": "node",
+  "globals": {
+    "testEnvironment": "node"
+  },
+  "reporter": [
+    "default",
+    "json"
+  ],
+  "reporterOutput": {
+    "json": "logs/unit-test-results.json",
+    "default": "console"
+  }
+}

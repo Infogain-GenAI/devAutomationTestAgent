@@ -136,7 +136,7 @@ class ExecutionAgent extends BaseSubAgent {
     // ── Phase 3: Coverage Assessment ────────────────────────────
     const unitCoverage = this._extractCoverage(unitTestResults, 'unit');
     const automationCoverage = this._extractCoverage(automationTestResults, 'automation');
-    const combinedCoverage = this._calculateCombinedCoverage(unitCoverage, automationCoverage);
+    const combinedCoverage = this._calculateCombinedCoverage(unitCoverage, automationCoverage, iteration);
 
     logger.info(`[execution] Coverage Report:`);
     logger.info(`   Unit Test Coverage:       ${unitCoverage}%`);
@@ -531,35 +531,62 @@ class ExecutionAgent extends BaseSubAgent {
 
   /**
    * Extract coverage percentage from test results.
+   * Unit tests: use Jest/Mocha coverage from tool
+   * Automation tests: use pass rate (passed/total) as proxy for coverage
    */
   _extractCoverage(results, type) {
-    if (!results) return 0;
+    if (!results) {
+      logger.warn(`[execution] \u26a0\ufe0f  No ${type} test results available`);
+      return 0;
+    }
 
     // Unit tests: use Jest/Mocha coverage
     if (type === 'unit' && results.coverage) {
       const cov = results.coverage;
-      return typeof cov === 'number' ? cov : (cov.statements || cov.lines || 0);
+      const coverage = typeof cov === 'number' ? cov : (cov.statements || cov.lines || 0);
+      logger.info(`[execution] Unit test coverage: ${coverage}% (${results.passed}/${results.total} passed)`);
+      return coverage;
     }
 
     // Automation tests: use pass rate as proxy for coverage
     if (type === 'automation') {
-      if (results.total === 0) return 0;
-      return Math.round((results.passed / results.total) * 100);
+      if (results.total === 0) {
+        logger.warn('[execution] \u274c Automation: No tests found (total=0)');
+        logger.debug(`  Details: Failed=${results.failed}, Passed=${results.passed}, Skipped=${results.skipped}`);
+        return 0;
+      }
+      const coverage = Math.round((results.passed / results.total) * 100);
+      logger.info(`[execution] Automation test pass rate: ${coverage}% (${results.passed}/${results.total} passed, ${results.failed} failed)`);
+      return coverage;
     }
 
+    logger.warn(`[execution] \u26a0\ufe0f  Unable to calculate ${type} coverage`);
     return 0;
   }
 
   /**
    * Calculate combined coverage from unit and automation.
-   * Uses weighted average: unit coverage (from tool) + automation pass rate.
+   * Uses weighted average: 60% unit coverage + 40% automation pass rate.
    */
-  _calculateCombinedCoverage(unitCoverage, automationCoverage) {
-    if (unitCoverage === 0 && automationCoverage === 0) return 0;
-    if (unitCoverage === 0) return automationCoverage;
-    if (automationCoverage === 0) return unitCoverage;
-    // Weighted: 60% unit coverage, 40% automation pass rate
-    return Math.round(unitCoverage * 0.6 + automationCoverage * 0.4);
+  _calculateCombinedCoverage(unitCoverage, automationCoverage, iteration = 0) {
+    let combined = 0;
+    
+    if (unitCoverage === 0 && automationCoverage === 0) {
+      logger.warn('[execution] \u26a0\ufe0f  Both unit and automation coverage are 0%');
+      combined = 0;
+    } else if (unitCoverage === 0) {
+      combined = automationCoverage;
+      logger.debug('[execution] Using automation coverage only (unit=0)');
+    } else if (automationCoverage === 0) {
+      combined = unitCoverage;
+      logger.debug('[execution] Using unit coverage only (automation=0)');
+    } else {
+      // Weighted: 60% unit coverage, 40% automation pass rate
+      combined = Math.round(unitCoverage * 0.6 + automationCoverage * 0.4);
+      logger.debug(`[execution] Combined coverage calculation: ${unitCoverage}% * 0.6 + ${automationCoverage}% * 0.4 = ${combined}%`);
+    }
+    
+    return combined;
   }
 
   /**

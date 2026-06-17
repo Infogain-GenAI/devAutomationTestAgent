@@ -5,6 +5,7 @@ const path = require('path');
 const { execSync, spawn } = require('child_process');
 const logger = require('../utils/logger');
 const promptLoader = require('../utils/prompt-loader');
+const TestConfigManager = require('./test-config-manager');
 
 /**
  * Unit Test Pipeline — Dedicated orchestrator for unit test generation & execution.
@@ -31,6 +32,9 @@ class UnitTestPipeline {
     this.codeGenProvider = dependencies.codeGenProvider || dependencies.aiProvider;
     this.unitTestRunner = dependencies.unitTestRunner;
     this.promptLoader = promptLoader;
+    
+    // Initialize Test Configuration Manager
+    this.testConfigManager = new TestConfigManager(config);
 
     // Configuration
     this.coverageTarget = config.coverageThreshold || 90;
@@ -61,12 +65,32 @@ class UnitTestPipeline {
     const framework = this._detectFramework(workDir, techStack);
     logger.info(`[unit-pipeline] Framework: ${framework}`);
 
+    // ── Stage 0: Validate Test Configurations ────────────────────
+    logger.info('[unit-pipeline] Stage 0: Validating Test Configurations');
+    try {
+      await this.testConfigManager.ensureConfigurations();
+      
+      // Validate Unit test configuration
+      try {
+        const unitConfig = await this.testConfigManager.validateTestConfig('unit');
+        logger.info(`[unit-pipeline] ✅ Unit test configuration validated`);
+      } catch (err) {
+        logger.warn(`[unit-pipeline] Unit config validation warning: ${err.message}`);
+      }
+      
+      // Print configuration summary
+      this.testConfigManager.printConfigurationSummary();
+    } catch (err) {
+      logger.error(`[unit-pipeline] ❌ Configuration validation failed: ${err.message}`);
+      throw err;
+    }
+
     // ── Stage 1: Verify Dependencies ─────────────────────────────
-    logger.info('[unit-pipeline] Stage 0: Dependency Verification');
+    logger.info('[unit-pipeline] Stage 1: Dependency Verification');
     await this._verifyDependencies(workDir, framework);
 
-    // ── Stage 1: Generate API Documentation ──────────────────────
-    logger.info('[unit-pipeline] Stage 1: API Documentation Generation');
+    // ── Stage 2: Generate API Documentation ──────────────────────
+    logger.info('[unit-pipeline] Stage 2: API Documentation Generation');
     let apiDocumentation;
     try {
       apiDocumentation = await this._generateApiDocumentation(workDir, techStack, codeAnalysis);
@@ -76,8 +100,8 @@ class UnitTestPipeline {
       apiDocumentation = { apiEndpoints: [], dataModels: [], businessLogic: [] };
     }
 
-    // ── Stage 2: Verify Documentation ────────────────────────────
-    logger.info('[unit-pipeline] Stage 2: Documentation Verification');
+    // ── Stage 3: Verify Documentation ────────────────────────────
+    logger.info('[unit-pipeline] Stage 3: Documentation Verification');
     try {
       apiDocumentation = await this._verifyApiDocumentation(workDir, apiDocumentation, codeAnalysis);
       logger.info('[unit-pipeline] ✅ Documentation verified and corrected');
@@ -85,13 +109,13 @@ class UnitTestPipeline {
       logger.warn(`[unit-pipeline] Doc verification failed (non-fatal): ${err.message}`);
     }
 
-    // ── Stage 3: Generate Unit Tests in Chunks ───────────────────
-    logger.info('[unit-pipeline] Stage 3: Unit Test Generation (chunked)');
+    // ── Stage 4: Generate Unit Tests in Chunks ───────────────────
+    logger.info('[unit-pipeline] Stage 4: Unit Test Generation (chunked)');
     const generatedFiles = await this._generateUnitTestsChunked(workDir, techStack, codeAnalysis, apiDocumentation, framework);
     logger.info(`[unit-pipeline] ✅ Generated ${generatedFiles.length} test file(s)`);
 
-    // ── Stage 4: Verify & Fix Unit Tests ─────────────────────────
-    logger.info('[unit-pipeline] Stage 4: Test Verification & Fixing');
+    // ── Stage 5: Verify & Fix Unit Tests ─────────────────────────
+    logger.info('[unit-pipeline] Stage 5: Test Verification & Fixing');
     const verifiedFiles = await this._verifyAndFixTests(workDir, generatedFiles, techStack, framework);
     logger.info(`[unit-pipeline] ✅ ${verifiedFiles.ready} files ready, ${verifiedFiles.fixed} fixed, ${verifiedFiles.skipped} skipped`);
 

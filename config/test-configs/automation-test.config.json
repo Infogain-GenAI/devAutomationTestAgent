@@ -1,0 +1,37 @@
+{
+  "name": "Automation Test Configuration",
+  "version": "1.0.0",
+  "createdAt": "2026-06-16T00:00:00.000Z",
+  "sourcePackageVersion": "2.0.0",
+  "framework": "playwright",
+  "testCommand": "PLAYWRIGHT_HEADLESS=1 npx playwright test --project=automation",
+  "testCommandHeadless": "PLAYWRIGHT_HEADLESS=1 npx playwright test --project=automation",
+  "testCommandHeaded": "npx playwright test --project=automation --headed",
+  "testCommandDebug": "npx playwright test --project=automation --debug",
+  "testCommandCI": "PLAYWRIGHT_HEADLESS=1 CI=true DISPLAY='' npx playwright test --project=automation",
+  "outputDir": "logs",
+  "browsers": [
+    "chromium"
+  ],
+  "headless": true,
+  "timeout": 60000,
+  "retries": 3,
+  "workers": 1,
+  "fullyParallel": false,
+  "webServer": {
+    "command": "npm start",
+    "url": "http://localhost:3000",
+    "reuseExistingServer": false,
+    "timeout": 120000
+  },
+  "reporter": [
+    "html",
+    "json",
+    "junit"
+  ],
+  "reporterOutput": {
+    "html": "logs/automation-report.html",
+    "json": "logs/automation-results.json",
+    "junit": "logs/automation-junit.xml"
+  }
+}

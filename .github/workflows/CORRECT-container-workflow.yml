@@ -89,10 +89,10 @@ on:
 #   - ATA_ACR_REGISTRY_URL    : Azure Container Registry URL (e.g., myregistry.azurecr.io)
 #   - ATA_ACR_USERNAME        : ACR username / service principal client ID
 #   - ATA_ACR_PASSWORD        : ACR password / service principal client secret
-#   - ATA_AI_API_KEY          : AI provider API key (OpenAI/Claude/Gemini)
-#   - ATA_OPENAI_API_KEY      : (Optional) Separate OpenAI key
-#   - ATA_CLAUDE_API_KEY      : (Optional) Separate Claude key
-#   - ATA_GEMINI_API_KEY      : (Optional) Separate Gemini key
+#   - ATA_AI_API_KEY          : Required primary AI API key (used for all providers by default)
+#   - ATA_OPENAI_API_KEY      : (Optional) Overrides ATA_AI_API_KEY for OpenAI only
+#   - ATA_CLAUDE_API_KEY      : (Optional) Overrides ATA_AI_API_KEY for Claude only
+#   - ATA_GEMINI_API_KEY      : (Optional) Overrides ATA_AI_API_KEY for Gemini only
 #   - ATA_CODE_GENERATION_CLAUDE_API_KEY : (Optional) Separate Claude key for code generation
 #   - ATA_APP_SECRETS         : (Optional) JSON string of app environment variables
 #   - ATA_GITHUB_PAT          : GitHub Personal Access Token for PR creation
@@ -136,15 +136,14 @@ jobs:
       contents: write        # Required to push commits and branches
       pull-requests: write   # Required to create pull requests
       issues: write         # Required for issue creation (optional)
-      checks: write         # Required for check runs (optional)
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || github.ref }}
-          token: ${{ secrets.ATA_GITHUB_PAT }}
-          persist-credentials: true
+          token: ${{ secrets.ATA_GITHUB_PAT || github.token }}
+          persist-credentials: false
 
       - name: Login to Azure Container Registry
         uses: docker/login-action@v3
@@ -155,6 +154,7 @@ jobs:
 
       - name: Pull IGNIS Automation Agent Image
         run: |
+          set -euo pipefail
           ACR_REGISTRY="${{ secrets.ATA_ACR_REGISTRY_URL }}"
           IMAGE_NAME="${{ vars.ATA_ACR_IMAGE_NAME || 'automationtestagent' }}"
           IMAGE_TAG="${{ vars.ATA_ACR_IMAGE_TAG || 'latest' }}"
@@ -163,6 +163,79 @@ jobs:
           echo "🐳 Pulling container image: ${FULL_IMAGE}"
           docker pull "${FULL_IMAGE}"
           echo "✅ Image pulled successfully"
+
+      - name: Validate Workflow Inputs
+        run: |
+          set -euo pipefail
+
+          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+          AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.ATA_AI_PROVIDER || 'openai' }}"
+          TEST_TYPES="${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }}"
+          MAX_ITERATIONS="${{ github.event.inputs.max-iterations || vars.ATA_MAX_ITERATIONS || '3' }}"
+          SUB_AGENT_MAX_ITERATIONS="${{ github.event.inputs.sub-agent-max-iterations || vars.ATA_SUB_AGENT_MAX_ITERATIONS || '5' }}"
+          COVERAGE_THRESHOLD="${{ github.event.inputs.coverage-threshold || vars.ATA_COVERAGE_THRESHOLD || '95' }}"
+          APP_URL="${{ github.event.inputs.app-url || vars.ATA_APP_URL || '' }}"
+          AI_API_KEY="${{ secrets.ATA_AI_API_KEY }}"
+
+          validate_numeric_range() {
+            local value="$1"
+            local min="$2"
+            local max="$3"
+            local label="$4"
+
+            if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+              echo "❌ Invalid ${label}: '$value' is not numeric"
+              exit 1
+            fi
+
+            if [ "$value" -lt "$min" ] || [ "$value" -gt "$max" ]; then
+              echo "❌ Invalid ${label}: '$value' is outside ${min}-${max}"
+              exit 1
+            fi
+          }
+
+          if [ -z "$AI_API_KEY" ]; then
+            echo "❌ Missing required secret: ATA_AI_API_KEY"
+            exit 1
+          fi
+
+          if ! [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$BRANCH" == *..* ]]; then
+            echo "❌ Invalid branch: '$BRANCH'"
+            exit 1
+          fi
+
+          case "$AI_PROVIDER" in
+            openai|claude|gemini) ;;
+            *)
+              echo "❌ Invalid AI provider: '$AI_PROVIDER' (allowed: openai, claude, gemini)"
+              exit 1
+              ;;
+          esac
+
+          validate_numeric_range "$MAX_ITERATIONS" 1 10 "max-iterations"
+          validate_numeric_range "$SUB_AGENT_MAX_ITERATIONS" 1 15 "sub-agent-max-iterations"
+          validate_numeric_range "$COVERAGE_THRESHOLD" 1 100 "coverage-threshold"
+
+          VALID_TEST_TYPES="unit e2e api integration visual accessibility performance"
+          IFS=',' read -r -a REQUESTED_TEST_TYPES <<< "$TEST_TYPES"
+          for t in "${REQUESTED_TEST_TYPES[@]}"; do
+            t="${t//[[:space:]]/}"
+            if [ -z "$t" ]; then
+              echo "❌ Invalid test-types: empty value found"
+              exit 1
+            fi
+            if ! echo " $VALID_TEST_TYPES " | grep -q " ${t} "; then
+              echo "❌ Invalid test type: '$t'"
+              exit 1
+            fi
+          done
+
+          if [ -n "$APP_URL" ] && ! [[ "$APP_URL" =~ ^https?:// ]]; then
+            echo "❌ Invalid app-url: '$APP_URL' (must start with http:// or https://)"
+            exit 1
+          fi
+
+          echo "✅ Workflow input validation passed"
 
       # ════════════════════════════════════════════════════════════════════════
       # RUN IGNIS AUTOMATION TEST AGENT
@@ -180,10 +253,22 @@ jobs:
       - name: Run IGNIS Automation Test Agent
         id: run-agent
         run: |
+          set -euo pipefail
+
           ACR_REGISTRY="${{ secrets.ATA_ACR_REGISTRY_URL }}"
           IMAGE_NAME="${{ vars.ATA_ACR_IMAGE_NAME || 'automationtestagent' }}"
           IMAGE_TAG="${{ vars.ATA_ACR_IMAGE_TAG || 'latest' }}"
           FULL_IMAGE="${ACR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          CONTAINER_NAME="ignis-agent-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          EXECUTION_TIMEOUT_SECONDS=3600
+
+          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+          AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.ATA_AI_PROVIDER || 'openai' }}"
+          TEST_TYPES="${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }}"
+          MAX_ITERATIONS="${{ github.event.inputs.max-iterations || vars.ATA_MAX_ITERATIONS || '3' }}"
+          COVERAGE_THRESHOLD="${{ github.event.inputs.coverage-threshold || vars.ATA_COVERAGE_THRESHOLD || '95' }}"
+          RUN_MODE="${{ github.event.inputs.run-mode || 'full' }}"
+          RUN_AGENT="${{ github.event.inputs.run-agent || 'N/A' }}"
           
           echo "════════════════════════════════════════════════════════════════════════"
           echo "🚀 IGNIS Automation Test Agent - Starting Execution"
@@ -191,13 +276,13 @@ jobs:
           echo ""
           echo "📦 Image:        ${FULL_IMAGE}"
           echo "📁 Workspace:    ${{ github.workspace }}"
-          echo "🌿 Branch:       ${{ github.event.inputs.branch || github.ref_name }}"
-          echo "🤖 AI Provider:  ${{ github.event.inputs.ai-provider || vars.ATA_AI_PROVIDER || 'openai' }}"
-          echo "🧪 Test Types:   ${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }}"
-          echo "🔄 Iterations:   ${{ github.event.inputs.max-iterations || vars.ATA_MAX_ITERATIONS || '3' }}"
-          echo "🎯 Coverage:     ${{ github.event.inputs.coverage-threshold || vars.ATA_COVERAGE_THRESHOLD || '95' }}%"
-          echo "📋 Run Mode:     ${{ github.event.inputs.run-mode || 'full' }}"
-          echo "🔧 Run Agent:    ${{ github.event.inputs.run-agent || 'N/A' }}"
+          echo "🌿 Branch:       ${BRANCH}"
+          echo "🤖 AI Provider:  ${AI_PROVIDER}"
+          echo "🧪 Test Types:   ${TEST_TYPES}"
+          echo "🔄 Iterations:   ${MAX_ITERATIONS}"
+          echo "🎯 Coverage:     ${COVERAGE_THRESHOLD}%"
+          echo "📋 Run Mode:     ${RUN_MODE}"
+          echo "🔧 Run Agent:    ${RUN_AGENT}"
           echo ""
           echo "════════════════════════════════════════════════════════════════════════"
           echo ""
@@ -260,14 +345,19 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 AGENT EXECUTION LOG:"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          docker logs -f ignis-agent 2>&1
+
+          docker logs -f "${CONTAINER_NAME}" 2>&1 &
+          LOGS_PID=$!
+
+          if ! EXIT_CODE=$(timeout "${EXECUTION_TIMEOUT_SECONDS}" docker wait "${CONTAINER_NAME}"); then
+            echo "⏱️ Agent timed out after ${EXECUTION_TIMEOUT_SECONDS}s. Attempting to stop container..."
+            docker kill "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+            EXIT_CODE=124
+          fi
+
+          wait "${LOGS_PID}" || true
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          
-          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          # GET ACTUAL EXIT CODE from the container
-          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          EXIT_CODE=$(docker inspect ignis-agent --format='{{.State.ExitCode}}' 2>/dev/null || echo "1")
           
           echo "════════════════════════════════════════════════════════════════════════"
           echo "🏁 Agent Exit Code: ${EXIT_CODE}"
@@ -275,15 +365,19 @@ jobs:
           echo ""
           
           # Cleanup container
-          docker rm ignis-agent 2>/dev/null || true
+          if docker rm "${CONTAINER_NAME}" >/dev/null 2>&1; then
+            echo "🧹 Container cleanup complete"
+          else
+            echo "⚠️ Container cleanup skipped (container already removed)"
+          fi
           
           # Exit with the agent's actual exit code
-          if [ "${EXIT_CODE}" = "0" ]; then
+          if [ "${EXIT_CODE}" -eq 0 ]; then
             echo "✅ IGNIS Automation Test Agent completed SUCCESSFULLY"
             exit 0
           else
             echo "❌ IGNIS Automation Test Agent FAILED (exit code: ${EXIT_CODE})"
-            exit ${EXIT_CODE}
+            exit "${EXIT_CODE}"
           fi
 
       # ════════════════════════════════════════════════════════════════════════

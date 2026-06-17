@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
 const promptLoader = require('../utils/prompt-loader');
+const TestConfigManager = require('./test-config-manager');
 
 /**
  * Automation Test Pipeline — Dedicated orchestrator for E2E/API test generation & execution.
@@ -29,6 +30,9 @@ class AutomationTestPipeline {
     this.testRunner = dependencies.testRunner;
     this.issueFixer = dependencies.issueFixer;
     this.promptLoader = promptLoader;
+    
+    // Initialize Test Configuration Manager
+    this.testConfigManager = new TestConfigManager(config);
 
     this.maxFixIterations = config.maxFixIterations || 3;
     this.maxChunks = config.maxAutomationTestChunks || 8;
@@ -46,16 +50,65 @@ class AutomationTestPipeline {
    * @returns {object} Pipeline results with coverage, test results, and reports
    */
   async execute(context) {
-    const { workDir, techStack, codeAnalysis, apiDocumentation, appUrl } = context;
+    let { workDir, techStack, codeAnalysis, apiDocumentation, appUrl } = context;
     const startTime = Date.now();
 
     logger.info('═══════════════════════════════════════════════════════════');
     logger.info('  AUTOMATION TEST PIPELINE — Starting');
     logger.info('═══════════════════════════════════════════════════════════');
 
+    // ── Stage 0: Pre-flight checks ───────────────────────────────
+    logger.info('[automation-pipeline] Stage 0: Pre-flight Checks');
+    
+    // Ensure API documentation is available
+    if (!apiDocumentation || Object.keys(apiDocumentation).length === 0) {
+      logger.warn('[automation-pipeline] No API documentation found');
+      logger.info('[automation-pipeline] Attempting to generate documentation from code analysis...');
+      if (codeAnalysis && codeAnalysis.apiEndpoints) {
+        apiDocumentation = this._generateDocFromAnalysis(codeAnalysis);
+        context.apiDocumentation = apiDocumentation;
+        logger.info(`[automation-pipeline] ✅ Generated API documentation with ${Object.keys(apiDocumentation).length} endpoints`);
+      } else {
+        logger.warn('[automation-pipeline] No code analysis available — E2E tests may be limited');
+        apiDocumentation = {};
+      }
+    }
+    
+    // Verify app URL is reachable
+    if (!appUrl) appUrl = process.env.APP_URL || 'http://localhost:3000';
+    logger.info(`[automation-pipeline] Verifying app URL: ${appUrl}`);
+    const appReady = await this._verifyAppUrl(appUrl);
+    if (!appReady) {
+      logger.warn('[automation-pipeline] ⚠️  App URL not responding — tests may fail');
+    }
+    
+    // ── Stage 0.5: Validate Test Configurations ──────────────────
+    logger.info('[automation-pipeline] Stage 0.5: Validating Test Configurations');
+    try {
+      await this.testConfigManager.ensureConfigurations();
+      
+      // Validate E2E/Automation test configuration
+      try {
+        const e2eConfig = await this.testConfigManager.validateTestConfig('e2e');
+        logger.info(`[automation-pipeline] ✅ E2E configuration validated`);
+      } catch (err) {
+        logger.warn(`[automation-pipeline] E2E config validation warning: ${err.message}`);
+      }
+      
+      // Print configuration summary
+      this.testConfigManager.printConfigurationSummary();
+    } catch (err) {
+      logger.error(`[automation-pipeline] ❌ Configuration validation failed: ${err.message}`);
+      throw err;
+    }
+
     // ── Stage 1: Verify Playwright ───────────────────────────────
     logger.info('[automation-pipeline] Stage 1: Playwright Verification');
     await this._verifyPlaywright(workDir);
+
+    // ── Stage 1.5: Generate Playwright Config ────────────────────
+    logger.info('[automation-pipeline] Stage 1.5: Generating Playwright Config');
+    await this._generatePlaywrightConfig(workDir, appUrl);
 
     // ── Stage 2: Generate E2E/API Tests ──────────────────────────
     logger.info('[automation-pipeline] Stage 2: E2E/API Test Generation');
@@ -109,32 +162,179 @@ class AutomationTestPipeline {
       try {
         execSync('npm install --save-dev @playwright/test', {
           cwd: workDir,
-          stdio: 'pipe',
+          stdio: 'inherit',  // Show output
           timeout: 120000,
           env: { ...process.env, NODE_ENV: 'development' }
         });
         logger.info('[automation-pipeline] ✅ @playwright/test installed');
       } catch (err) {
-        logger.warn(`[automation-pipeline] Failed to install @playwright/test locally: ${err.message.slice(0, 100)}`);
+        logger.error('[automation-pipeline] ❌ Failed to install @playwright/test');
+        logger.error(`  Error: ${err.message}`);
+        // Don't throw — continue with warning
+        logger.warn('[automation-pipeline] Proceeding without @playwright/test — tests may fail');
       }
+    } else {
+      logger.info('[automation-pipeline] ✅ @playwright/test already installed');
     }
 
     // Verify browsers installed
+    logger.info('[automation-pipeline] Installing Playwright browsers (chromium)...');
     try {
       execSync('npx playwright install chromium --with-deps', {
         cwd: workDir,
-        stdio: 'pipe',
-        timeout: 180000
+        stdio: 'inherit',  // Show output
+        timeout: 300000,   // Increase to 5 minutes for slower systems
+        env: { ...process.env, NODE_ENV: 'development' }
       });
-      logger.info('[automation-pipeline] ✅ Playwright browsers verified');
+      logger.info('[automation-pipeline] ✅ Playwright chromium browser installed');
     } catch (err) {
-      logger.warn(`[automation-pipeline] Playwright browser setup issue: ${err.message.slice(0, 100)}`);
+      logger.error('[automation-pipeline] ❌ Failed to install Playwright browsers');
+      logger.error(`  Error: ${err.message}`);
+      logger.warn('[automation-pipeline] Proceeding without browsers — tests will fail if Playwright needed');
     }
 
     // Set headless env vars
     if (!process.env.PLAYWRIGHT_HEADLESS) process.env.PLAYWRIGHT_HEADLESS = '1';
     if (!process.env.CI) process.env.CI = 'true';
     if (!process.env.HEADLESS) process.env.HEADLESS = 'true';
+    logger.info('[automation-pipeline] ✅ Environment variables configured for headless execution');
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // APP URL VERIFICATION & PLAYWRIGHT CONFIG GENERATION
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Verify that the app URL is reachable with health check.
+   * Returns true if app responds, false if unreachable (continues anyway).
+   */
+  async _verifyAppUrl(appUrl) {
+    const http = require('http');
+    const https = require('https');
+    const timeout = 5000;
+
+    logger.info(`[automation-pipeline] Health check: ${appUrl}`);
+    
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+      const maxRetries = 5;
+      let retries = 0;
+
+      const checkHealth = () => {
+        const protocol = appUrl.startsWith('https') ? https : http;
+        
+        try {
+          const req = protocol.get(appUrl, { timeout }, (res) => {
+            const elapsed = Date.now() - startTime;
+            logger.info(`[automation-pipeline] ✅ App responded with status ${res.statusCode} (${elapsed}ms)`);
+            resolve(true);
+          }).on('error', () => {
+            retry();
+          });
+
+          req.on('timeout', () => {
+            req.destroy();
+            retry();
+          });
+        } catch (err) {
+          retry();
+        }
+      };
+
+      const retry = () => {
+        retries++;
+        if (retries >= maxRetries) {
+          logger.warn(`[automation-pipeline] ⚠️  App not responding after ${maxRetries} retries at ${appUrl}`);
+          resolve(false);
+        } else {
+          logger.debug(`[automation-pipeline] Retry ${retries}/${maxRetries}...`);
+          setTimeout(checkHealth, 1000);
+        }
+      };
+
+      checkHealth();
+    });
+  }
+
+  /**
+   * Generate playwright.config.js in generated-tests/ directory.
+   */
+  async _generatePlaywrightConfig(workDir, appUrl) {
+    const configPath = path.join(workDir, 'generated-tests', 'playwright.config.js');
+    
+    if (fs.existsSync(configPath)) {
+      logger.info('[automation-pipeline] ✅ playwright.config.js already exists');
+      return configPath;
+    }
+
+    const generatedTestsDir = path.join(workDir, 'generated-tests');
+    if (!fs.existsSync(generatedTestsDir)) {
+      fs.mkdirSync(generatedTestsDir, { recursive: true });
+    }
+
+    const playwrightConfig = `const { defineConfig, devices } = require('@playwright/test');
+
+module.exports = defineConfig({
+  testDir: './tests',
+  fullyParallel: true,
+  forbidOnly: false,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 1 : undefined,
+  reporter: [
+    ['json', { outputFile: 'test-results.json' }],
+    ['list'],
+    ['html', { outputFile: 'html-report.html' }]
+  ],
+  use: {
+    baseURL: '${appUrl || 'http://localhost:3000'}',
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+    actionTimeout: 5000
+  },
+  projects: [
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] }
+    }
+  ],
+  timeout: 30000,
+  globalTimeout: 600000
+});
+`;
+
+    try {
+      fs.writeFileSync(configPath, playwrightConfig, 'utf-8');
+      logger.info(`[automation-pipeline] ✅ Generated playwright.config.js at generated-tests/`);
+      return configPath;
+    } catch (err) {
+      logger.error(`[automation-pipeline] Failed to write playwright.config.js: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Generate API documentation from code analysis (fallback when documentation missing).
+   */
+  _generateDocFromAnalysis(codeAnalysis) {
+    if (!codeAnalysis || !codeAnalysis.apiEndpoints) return {};
+    
+    const doc = {};
+    const endpoints = Array.isArray(codeAnalysis.apiEndpoints) ? codeAnalysis.apiEndpoints : Object.values(codeAnalysis.apiEndpoints);
+    
+    for (const endpoint of endpoints) {
+      const key = `${endpoint.method || 'GET'} ${endpoint.path || endpoint.name || 'unknown'}`;
+      doc[key] = {
+        method: endpoint.method || 'GET',
+        path: endpoint.path,
+        description: endpoint.description || `${endpoint.method} endpoint for ${endpoint.path}`,
+        parameters: endpoint.parameters || [],
+        responses: endpoint.responses || {},
+        handler: endpoint.handler || 'unknown'
+      };
+    }
+    
+    return doc;
   }
 
   // ═══════════════════════════════════════════════════════════════

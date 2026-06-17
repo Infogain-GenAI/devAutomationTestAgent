@@ -1,0 +1,39 @@
+{
+  "name": "E2E Test Configuration",
+  "version": "1.0.0",
+  "createdAt": "2026-06-16T00:00:00.000Z",
+  "sourcePackageVersion": "2.0.0",
+  "framework": "playwright",
+  "testCommand": "PLAYWRIGHT_HEADLESS=1 npx playwright test",
+  "testCommandHeadless": "PLAYWRIGHT_HEADLESS=1 npx playwright test",
+  "testCommandHeaded": "npx playwright test --headed",
+  "testCommandDebug": "npx playwright test --debug",
+  "testCommandCI": "PLAYWRIGHT_HEADLESS=1 CI=true DISPLAY='' npx playwright test",
+  "outputDir": "logs",
+  "browsers": [
+    "chromium",
+    "firefox",
+    "webkit"
+  ],
+  "headless": true,
+  "timeout": 30000,
+  "retries": 2,
+  "workers": 1,
+  "fullyParallel": false,
+  "webServer": {
+    "command": "npm start",
+    "url": "http://localhost:3000",
+    "reuseExistingServer": false,
+    "timeout": 120000
+  },
+  "reporter": [
+    "html",
+    "json",
+    "junit"
+  ],
+  "reporterOutput": {
+    "html": "logs/e2e-report.html",
+    "json": "logs/e2e-results.json",
+    "junit": "logs/e2e-junit.xml"
+  }
+}

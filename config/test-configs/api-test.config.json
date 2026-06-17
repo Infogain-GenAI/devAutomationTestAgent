@@ -1,0 +1,25 @@
+{
+  "name": "API Test Configuration",
+  "version": "1.0.0",
+  "createdAt": "2026-06-16T00:00:00.000Z",
+  "sourcePackageVersion": "2.0.0",
+  "framework": "jest",
+  "testCommand": "jest tests/api",
+  "outputDir": "logs",
+  "coverage": {
+    "enabled": true,
+    "threshold": 75
+  },
+  "timeout": 30000,
+  "parallel": true,
+  "apiBaseUrl": "http://localhost:3000/api",
+  "retries": 2,
+  "reporter": [
+    "default",
+    "json"
+  ],
+  "reporterOutput": {
+    "json": "logs/api-test-results.json",
+    "default": "console"
+  }
+}
