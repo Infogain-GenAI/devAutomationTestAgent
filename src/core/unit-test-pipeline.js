@@ -568,7 +568,13 @@ ${JSON.stringify(apiDocumentation?.businessLogic?.slice(0, 5) || [], null, 2).sl
     logger.info(`[unit-pipeline] Running tests from ${testDirs.length} directory(ies)...`);
 
     try {
-      const results = await this.unitTestRunner.constructor.runTests(workDir, testDirs, {
+      // Validate TestRunner is available and has runTests method
+      if (!this.unitTestRunner || typeof this.unitTestRunner.runTests !== 'function') {
+        throw new Error('TestRunner.runTests is not available - ensure TestRunner is properly initialized');
+      }
+      
+      const results = await this.unitTestRunner.runTests(workDir, {
+        testDirs: testDirs,
         detectedFrameworks: [framework]
       });
       return results;

@@ -5,6 +5,7 @@ const path = require('path');
 const logger = require('../utils/logger');
 const promptLoader = require('../utils/prompt-loader');
 const TestConfigManager = require('./test-config-manager');
+const DependencyInstaller = require('./dependency-installer');
 
 /**
  * Automation Test Pipeline — Dedicated orchestrator for E2E/API test generation & execution.
@@ -374,12 +375,21 @@ module.exports = defineConfig({
       logger.info(`[automation-pipeline] Generating chunk ${i + 1}/${totalChunks} (${chunk.length} items)...`);
 
       try {
-        const files = await this._generateChunk(
+        const generatedResult = await this._generateChunk(
           workDir, chunk, techStack, codeAnalysis, apiDocumentation, i + 1, totalChunks
         );
 
+        // Ensure files is iterable (handle both { files: [] } and direct array responses)
+        const files = Array.isArray(generatedResult) ? generatedResult : (generatedResult?.files || []);
+        
+        if (!Array.isArray(files)) {
+          logger.warn(`[automation-pipeline] Chunk ${i + 1} generation returned non-iterable files`);
+          continue;
+        }
+
         // Write files
         for (const file of files) {
+          if (!file || !file.path || !file.content) continue;
           const filePath = path.join(outputDir, path.basename(file.path));
           fs.writeFileSync(filePath, file.content, 'utf-8');
           allGeneratedFiles.push({ ...file, writtenPath: filePath });
@@ -503,7 +513,13 @@ ${JSON.stringify(apiDocumentation?.businessLogic?.slice(0, 5) || [], null, 2).sl
 
     try {
       logger.info(`[automation-pipeline] Running tests with app URL: ${appUrl || 'http://localhost:3000'}`);
-      const results = await this.testRunner.constructor.runTests(workDir, {
+      
+      // Validate TestRunner is available and has runTests method
+      if (!this.testRunner || typeof this.testRunner.runTests !== 'function') {
+        throw new Error('TestRunner.runTests is not available - ensure TestRunner is properly initialized');
+      }
+      
+      const results = await this.testRunner.runTests(workDir, {
         appUrl: appUrl || process.env.APP_URL || 'http://localhost:3000'
       });
       return results;
