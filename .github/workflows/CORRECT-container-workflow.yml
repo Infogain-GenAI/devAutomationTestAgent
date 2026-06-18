@@ -292,7 +292,7 @@ jobs:
           # This allows us to stream logs AND capture exit code properly
           # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
           CONTAINER_ID=$(docker run -d \
-            --name ignis-agent \
+            --name "${CONTAINER_NAME}" \
             -v "${{ github.workspace }}:/workspace" \
             -e REPO_PATH="/workspace" \
             -e REPO_BRANCH="${{ github.event.inputs.branch || github.ref_name }}" \
