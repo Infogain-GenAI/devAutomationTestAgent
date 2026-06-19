@@ -537,6 +537,12 @@ kubectl logs -f -n ignis -l app=ignis-test-agent
 
 This is the **recommended** way to use IGNIS. Add this workflow to your repository:
 
+Important runtime note:
+- Preferred approach is containerized execution using the provided workflow at `.github/workflows/CORRECT-container-workflow.yml`.
+- That workflow builds the agent image from this repository's Dockerfile.
+- Dockerfile already uses `mcr.microsoft.com/playwright` as base, so headless browser/runtime dependencies come from the official Playwright image.
+- No separate Playwright install step is required in the workflow job when using this containerized path.
+
 **Step 1:** Create `.github/workflows/ignis-testing.yml` in your repository:
 
 ```yaml

@@ -83,12 +83,17 @@ on:
           - 'true'
 
 # ============================================================================
-# SECRETS & VARIABLES REQUIRED (All prefixed with ATA_ to avoid conflicts)
+# SECRETS & VARIABLES (All prefixed with ATA_ to avoid conflicts)
 # ============================================================================
+# Image strategy:
+#   - This workflow builds the runtime image from local Dockerfile.
+#   - Dockerfile base image is mcr.microsoft.com/playwright.
+#   - ACR credentials are optional unless you add separate push/pull steps.
+#
 # Repository Secrets (Settings → Secrets and variables → Actions → Secrets):
-#   - ATA_ACR_REGISTRY_URL    : Azure Container Registry URL (e.g., myregistry.azurecr.io)
-#   - ATA_ACR_USERNAME        : ACR username / service principal client ID
-#   - ATA_ACR_PASSWORD        : ACR password / service principal client secret
+#   - ATA_ACR_REGISTRY_URL    : (Optional) Azure Container Registry URL
+#   - ATA_ACR_USERNAME        : (Optional) ACR username / service principal client ID
+#   - ATA_ACR_PASSWORD        : (Optional) ACR password / service principal client secret
 #   - ATA_AI_API_KEY          : Required primary AI API key (used for all providers by default)
 #   - ATA_OPENAI_API_KEY      : (Optional) Overrides ATA_AI_API_KEY for OpenAI only
 #   - ATA_CLAUDE_API_KEY      : (Optional) Overrides ATA_AI_API_KEY for Claude only
@@ -145,24 +150,16 @@ jobs:
           token: ${{ secrets.ATA_GITHUB_PAT || github.token }}
           persist-credentials: false
 
-      - name: Login to Azure Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ATA_ACR_REGISTRY_URL }}
-          username: ${{ secrets.ATA_ACR_USERNAME }}
-          password: ${{ secrets.ATA_ACR_PASSWORD }}
-
-      - name: Pull IGNIS Automation Agent Image
+      - name: Build IGNIS Agent Container Image (Playwright Base)
         run: |
           set -euo pipefail
-          ACR_REGISTRY="${{ secrets.ATA_ACR_REGISTRY_URL }}"
-          IMAGE_NAME="${{ vars.ATA_ACR_IMAGE_NAME || 'automationtestagent' }}"
-          IMAGE_TAG="${{ vars.ATA_ACR_IMAGE_TAG || 'latest' }}"
-          FULL_IMAGE="${ACR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          LOCAL_IMAGE="ignis-local:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           
-          echo "🐳 Pulling container image: ${FULL_IMAGE}"
-          docker pull "${FULL_IMAGE}"
-          echo "✅ Image pulled successfully"
+          echo "🐳 Building container image from Dockerfile"
+          echo "   Base image: mcr.microsoft.com/playwright"
+          echo "   Target image: ${LOCAL_IMAGE}"
+          docker build -t "${LOCAL_IMAGE}" .
+          echo "✅ Image built successfully"
 
       - name: Validate Workflow Inputs
         run: |
@@ -255,10 +252,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          ACR_REGISTRY="${{ secrets.ATA_ACR_REGISTRY_URL }}"
-          IMAGE_NAME="${{ vars.ATA_ACR_IMAGE_NAME || 'automationtestagent' }}"
-          IMAGE_TAG="${{ vars.ATA_ACR_IMAGE_TAG || 'latest' }}"
-          FULL_IMAGE="${ACR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          FULL_IMAGE="ignis-local:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           CONTAINER_NAME="ignis-agent-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           EXECUTION_TIMEOUT_SECONDS=3600
 
@@ -285,6 +279,17 @@ jobs:
           echo "🔧 Run Agent:    ${RUN_AGENT}"
           echo ""
           echo "════════════════════════════════════════════════════════════════════════"
+          echo ""
+
+          # Clean stale artifacts from repository so this run shows fresh progress only
+          echo "🧹 Cleaning stale logs/results from previous runs..."
+          rm -f "${{ github.workspace }}/logs"/*.log 2>/dev/null || true
+          rm -f "${{ github.workspace }}/logs"/*.json 2>/dev/null || true
+          rm -f "${{ github.workspace }}/logs"/*.xml 2>/dev/null || true
+          rm -f "${{ github.workspace }}/test-results"/*.json 2>/dev/null || true
+          rm -rf "${{ github.workspace }}/generated-tests" 2>/dev/null || true
+          mkdir -p "${{ github.workspace }}/logs" "${{ github.workspace }}/test-results" "${{ github.workspace }}/generated-tests"
+          echo "✅ Workspace prepared for current run"
           echo ""
           
           # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -328,34 +333,51 @@ jobs:
             "${FULL_IMAGE}")
           
           echo "🐳 Container started: ${CONTAINER_ID:0:12}"
+          echo "🔍 Container name: ${CONTAINER_NAME}"
           echo ""
           
           # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          # STREAM CONTAINER LOGS IN REAL-TIME
+          # VERIFY CONTAINER IS RUNNING
           # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          # docker logs -f follows the container output until it exits
-          # This is how we see ALL agent output including:
-          #   - Code analysis results
-          #   - Test generation details
-          #   - Unit test execution results
-          #   - E2E/API test results
-          #   - Fix iterations
-          #   - Final summary
-          # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📋 AGENT EXECUTION LOG:"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          sleep 2  # Give container a moment to start
+          
+          if ! docker inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+            echo "❌ ERROR: Container does not exist: ${CONTAINER_NAME}"
+            echo "📋 Container may have crashed on startup. Checking logs..."
+            docker logs "${CONTAINER_ID}" 2>&1 || echo "Unable to retrieve logs"
+            EXIT_CODE=1
+          else
+            CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' "${CONTAINER_NAME}" 2>/dev/null || echo "unknown")
+            echo "📊 Container status: ${CONTAINER_STATUS}"
+            echo ""
+            
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # STREAM CONTAINER LOGS IN REAL-TIME
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # docker logs -f follows the container output until it exits
+            # This is how we see ALL agent output including:
+            #   - Code analysis results
+            #   - Test generation details
+            #   - Unit test execution results
+            #   - E2E/API test results
+            #   - Fix iterations
+            #   - Final summary
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📋 AGENT EXECUTION LOG:"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          docker logs -f "${CONTAINER_NAME}" 2>&1 &
-          LOGS_PID=$!
+            docker logs -f "${CONTAINER_NAME}" 2>&1 &
+            LOGS_PID=$!
 
-          if ! EXIT_CODE=$(timeout "${EXECUTION_TIMEOUT_SECONDS}" docker wait "${CONTAINER_NAME}"); then
-            echo "⏱️ Agent timed out after ${EXECUTION_TIMEOUT_SECONDS}s. Attempting to stop container..."
-            docker kill "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-            EXIT_CODE=124
+            if ! EXIT_CODE=$(timeout "${EXECUTION_TIMEOUT_SECONDS}" docker wait "${CONTAINER_NAME}"); then
+              echo "⏱️ Agent timed out after ${EXECUTION_TIMEOUT_SECONDS}s. Attempting to stop container..."
+              docker kill "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+              EXIT_CODE=124
+            fi
+
+            wait "${LOGS_PID}" || true
           fi
-
-          wait "${LOGS_PID}" || true
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           

@@ -2,6 +2,23 @@ name: 'IGNIS Automation Test Agent'
 description: 'AI-powered automation testing for YOUR repository — generates tests, runs them, fixes issues, creates PRs'
 author: 'IGNIS'
 
+# ─────────────────────────────────────────────────────────────────────────────
+# USAGE NOTE — Two execution paths, same secrets, different names:
+#
+# Path 1 (this action — used via `uses:`)
+#   Callers must map their secrets/vars to these inputs:
+#     ai-api-key:     secrets.ATA_AI_API_KEY  (or any secret name you choose)
+#     github-token:   secrets.ATA_GITHUB_PAT   (or github.token)
+#     ai-provider:    vars.ATA_AI_PROVIDER     (or hardcode 'openai')
+#
+# Path 2 (CORRECT-container-workflow.yml — standalone workflow)
+#   Reads ATA_* secrets/vars directly, does NOT call this action.yml.
+#   The ATA_ naming is internal to that workflow only.
+#
+# The ATA_ prefix is a repository secret/variable naming convention.
+# It does NOT affect how this action works internally.
+# ─────────────────────────────────────────────────────────────────────────────
+
 inputs:
   branch:
     description: 'Branch to test (the base branch for fix PRs)'
@@ -12,7 +29,10 @@ inputs:
     required: false
     default: 'openai'
   ai-api-key:
-    description: 'API key for the AI provider'
+    description: |
+      API key for the AI provider.
+      Map from your repository secret — e.g. secrets.ATA_AI_API_KEY
+      (the ATA_ prefix is the repo naming convention; any secret name works)
     required: true
   max-iterations:
     description: 'Maximum fix-and-retest iterations'
@@ -38,49 +58,51 @@ inputs:
   app-secrets:
     description: 'JSON string of environment variables for the target app'
     required: false
+  github-token:
+    description: |
+      GitHub token for PR creation and branch push.
+      Defaults to the automatic github.token.
+      For cross-repo PRs use a PAT — e.g. secrets.ATA_GITHUB_PAT
+    required: false
+    default: ${{ github.token }}
 
 runs:
-  using: 'composite'
-  steps:
-    - name: Checkout repository (same repo)
-      uses: actions/checkout@v4
-      with:
-        ref: ${{ inputs.branch }}
+  # ─────────────────────────────────────────────────────────────────────────
+  # Docker container action — builds from local Dockerfile.
+  # Dockerfile base image: mcr.microsoft.com/playwright (official Playwright
+  # image) — all Chromium headless runtime dependencies come pre-installed.
+  # Agent source code is copied into the image at build time (see Dockerfile).
+  # GitHub Actions mounts the caller's workspace at /github/workspace
+  # automatically; REPO_PATH points the agent at that directory.
+  # ─────────────────────────────────────────────────────────────────────────
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    # ── Workspace & repo ──────────────────────────────────────────────────
+    REPO_PATH: /github/workspace
+    REPO_BRANCH: ${{ inputs.branch }}
+    GITHUB_TOKEN: ${{ inputs.github-token }}
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
+    # ── AI provider ───────────────────────────────────────────────────────
+    AI_PROVIDER: ${{ inputs.ai-provider }}
+    AI_API_KEY: ${{ inputs.ai-api-key }}
+    OPENAI_API_KEY: ${{ inputs.ai-api-key }}
+    CLAUDE_API_KEY: ${{ inputs.ai-api-key }}
+    GEMINI_API_KEY: ${{ inputs.ai-api-key }}
 
-    - name: Install IGNIS agent dependencies
-      shell: bash
-      run: npm ci
-      working-directory: ${{ github.action_path }}
+    # ── Agent configuration ───────────────────────────────────────────────
+    MAX_ITERATIONS: ${{ inputs.max-iterations }}
+    TEST_TYPES: ${{ inputs.test-types }}
+    APP_URL: ${{ inputs.app-url }}
+    AUTO_START_APP: ${{ inputs.auto-start-app }}
+    APP_START_COMMAND: ${{ inputs.app-start-command }}
+    TECH_STACK_OVERRIDE: ${{ inputs.tech-stack-override }}
+    APP_SECRETS: ${{ inputs.app-secrets }}
 
-    - name: Install Playwright browsers
-      shell: bash
-      run: npx playwright install --with-deps chromium
-      working-directory: ${{ github.action_path }}
-
-    - name: Run IGNIS Automation Test Agent
-      shell: bash
-      run: node src/cli.js
-      working-directory: ${{ github.action_path }}
-      env:
-        REPO_PATH: ${{ github.workspace }}
-        REPO_BRANCH: ${{ inputs.branch }}
-        AI_PROVIDER: ${{ inputs.ai-provider }}
-        AI_API_KEY: ${{ inputs.ai-api-key }}
-        OPENAI_API_KEY: ${{ inputs.ai-api-key }}
-        CLAUDE_API_KEY: ${{ inputs.ai-api-key }}
-        GEMINI_API_KEY: ${{ inputs.ai-api-key }}
-        MAX_ITERATIONS: ${{ inputs.max-iterations }}
-        TEST_TYPES: ${{ inputs.test-types }}
-        APP_URL: ${{ inputs.app-url }}
-        AUTO_START_APP: ${{ inputs.auto-start-app }}
-        APP_START_COMMAND: ${{ inputs.app-start-command }}
-        TECH_STACK_OVERRIDE: ${{ inputs.tech-stack-override }}
-        APP_SECRETS: ${{ inputs.app-secrets }}
-        GITHUB_TOKEN: ${{ github.token }}
-        AGENT_WORK_DIR: ${{ github.action_path }}/workspace
-        NODE_PATH: ${{ github.action_path }}/node_modules
+    # ── Headless / CI flags (Playwright runs without a display server) ─────
+    CI: 'true'
+    HEADLESS: 'true'
+    PLAYWRIGHT_HEADLESS: '1'
+    PLAYWRIGHT_BROWSERS_PATH: '/ms-playwright'
+    DISPLAY: ''
+    NODE_ENV: 'production'

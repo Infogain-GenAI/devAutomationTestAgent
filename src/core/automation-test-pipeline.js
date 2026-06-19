@@ -2,9 +2,11 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const logger = require('../utils/logger');
 const promptLoader = require('../utils/prompt-loader');
 const TestConfigManager = require('./test-config-manager');
+const DependencyInstaller = require('./dependency-installer');
 const DependencyInstaller = require('./dependency-installer');
 
 /**
@@ -154,8 +156,6 @@ class AutomationTestPipeline {
   // ═══════════════════════════════════════════════════════════════
 
   async _verifyPlaywright(workDir) {
-    const { execSync } = require('child_process');
-
     // Check if Playwright is installed
     const hasPlaywright = this._isPackageAvailable('@playwright/test', workDir);
     if (!hasPlaywright) {
@@ -181,13 +181,14 @@ class AutomationTestPipeline {
     // Verify browsers installed
     logger.info('[automation-pipeline] Installing Playwright browsers (chromium)...');
     try {
-      execSync('npx playwright install chromium --with-deps', {
-        cwd: workDir,
-        stdio: 'inherit',  // Show output
-        timeout: 300000,   // Increase to 5 minutes for slower systems
-        env: { ...process.env, NODE_ENV: 'development' }
-      });
-      logger.info('[automation-pipeline] ✅ Playwright chromium browser installed');
+      const browserInstallResult = await DependencyInstaller.installPlaywrightBrowsers(workDir);
+      if (browserInstallResult?.success && browserInstallResult?.skipped) {
+        logger.info('[automation-pipeline] ✅ Playwright browsers already available');
+      } else if (browserInstallResult?.success) {
+        logger.info('[automation-pipeline] ✅ Playwright chromium browser installed');
+      } else {
+        logger.warn('[automation-pipeline] ⚠️ Browser installation returned non-success result');
+      }
     } catch (err) {
       logger.error('[automation-pipeline] ❌ Failed to install Playwright browsers');
       logger.error(`  Error: ${err.message}`);
@@ -227,6 +228,13 @@ class AutomationTestPipeline {
         try {
           const req = protocol.get(appUrl, { timeout }, (res) => {
             const elapsed = Date.now() - startTime;
+            // Treat 5xx as unhealthy app state (build/runtime error), not success.
+            if (res.statusCode >= 500) {
+              logger.warn(`[automation-pipeline] ⚠️  App responded with unhealthy status ${res.statusCode} (${elapsed}ms)`);
+              retry();
+              return;
+            }
+
             logger.info(`[automation-pipeline] ✅ App responded with status ${res.statusCode} (${elapsed}ms)`);
             resolve(true);
           }).on('error', () => {

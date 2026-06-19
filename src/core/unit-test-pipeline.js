@@ -568,13 +568,13 @@ ${JSON.stringify(apiDocumentation?.businessLogic?.slice(0, 5) || [], null, 2).sl
     logger.info(`[unit-pipeline] Running tests from ${testDirs.length} directory(ies)...`);
 
     try {
-      // Validate TestRunner is available and has runTests method
+      // Validate runner is available and has runTests method
       if (!this.unitTestRunner || typeof this.unitTestRunner.runTests !== 'function') {
-        throw new Error('TestRunner.runTests is not available - ensure TestRunner is properly initialized');
+        throw new Error('UnitTestRunner.runTests is not available - ensure unitTestRunner is initialized');
       }
-      
-      const results = await this.unitTestRunner.runTests(workDir, {
-        testDirs: testDirs,
+
+      // Signature: runTests(workDir, testDirs, options)
+      const results = await this.unitTestRunner.runTests(workDir, testDirs, {
         detectedFrameworks: [framework]
       });
       return results;
@@ -719,7 +719,8 @@ ${JSON.stringify(apiDocumentation?.businessLogic?.slice(0, 5) || [], null, 2).sl
       skipped: results.skipped || 0,
       exitCode: results.exitCode,
       passRate: results.total ? `${Math.round(results.passed / results.total * 100)}%` : '0%',
-      errors: results.errors?.slice(0, 5000) || ''
+      errors: results.errors?.slice(0, 5000) || '',
+      skippedReason: results.skippedReason || ''
     };
 
     // Write JSON report
@@ -741,6 +742,7 @@ ${JSON.stringify(apiDocumentation?.businessLogic?.slice(0, 5) || [], null, 2).sl
       `Failed:     ${report.failed}`,
       `Skipped:    ${report.skipped}`,
       `Exit Code:  ${report.exitCode}`,
+      report.skippedReason ? `Skip Reason:${report.skippedReason}` : '',
       '',
       '───────────────────────────────────────────────────────────',
       'ERRORS:',
