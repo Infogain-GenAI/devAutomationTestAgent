@@ -7,7 +7,6 @@ const logger = require('../utils/logger');
 const promptLoader = require('../utils/prompt-loader');
 const TestConfigManager = require('./test-config-manager');
 const DependencyInstaller = require('./dependency-installer');
-const DependencyInstaller = require('./dependency-installer');
 
 /**
  * Automation Test Pipeline — Dedicated orchestrator for E2E/API test generation & execution.
