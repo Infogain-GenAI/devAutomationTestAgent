@@ -110,3 +110,4 @@ Thumbs.db
 !.env.example
 !config/*.example.json
 !**/.gitkeep
+test-demo-app
