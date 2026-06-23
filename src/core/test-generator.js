@@ -32,7 +32,8 @@ class TestGenerator {
     // Log token-saving context being passed to AI
     if (this._baselineCoverage) {
       const t = this._baselineCoverage._totals || {};
-      logger.info(`\ud83d\udcb0 Token-saving: passing ${t.files || 0} existing file(s) / ${t.cases || 0} case(s) as context to suppress duplicate generation`);\n    }
+      logger.info(`💰 Token-saving: passing ${t.files || 0} existing file(s) / ${t.cases || 0} case(s) as context to suppress duplicate generation`);
+    }
 
     const generated = {};
 
