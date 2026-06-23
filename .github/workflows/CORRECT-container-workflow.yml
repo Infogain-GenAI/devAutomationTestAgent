@@ -5,8 +5,6 @@ name: 'IGNIS Automation Test Agent'
 # ============================================================================
 on:
   push:
-    branches:
-      - '**'
     branches-ignore:
       - 'ignis/**'
   workflow_dispatch:
@@ -147,12 +145,20 @@ jobs:
       issues: write         # Required for issue creation (optional)
     
     steps:
-      - name: Checkout repository
+      - name: Checkout target repository (code under test)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || github.ref }}
           token: ${{ secrets.ATA_GITHUB_PAT || github.token }}
           persist-credentials: false
+
+      - name: Checkout IGNIS Agent repository (provides Dockerfile)
+        uses: actions/checkout@v4
+        with:
+          repository: Infogain-GenAI/devAutomationTestAgent
+          ref: main
+          token: ${{ secrets.ATA_GITHUB_PAT || github.token }}
+          path: .ignis-agent
 
       - name: Build IGNIS Agent Container Image (Playwright Base)
         run: |
@@ -162,7 +168,8 @@ jobs:
           echo "🐳 Building container image from Dockerfile"
           echo "   Base image: mcr.microsoft.com/playwright"
           echo "   Target image: ${LOCAL_IMAGE}"
-          docker build -t "${LOCAL_IMAGE}" .
+          echo "   Agent source: .ignis-agent/ (commit: $(git -C .ignis-agent rev-parse --short HEAD))"
+          docker build -t "${LOCAL_IMAGE}" .ignis-agent/
           echo "✅ Image built successfully"
 
       - name: Validate Workflow Inputs
