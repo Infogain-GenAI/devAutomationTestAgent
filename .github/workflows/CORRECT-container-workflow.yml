@@ -47,6 +47,10 @@ on:
         description: 'Maximum main pipeline iterations'
         required: false
         default: '3'
+      execution-timeout-minutes:
+        description: 'Max agent runtime before forced stop (minutes, 30-360)'
+        required: false
+        default: '180'
       sub-agent-max-iterations:
         description: 'Maximum iterations per sub-agent (1-15)'
         required: false
@@ -169,6 +173,7 @@ jobs:
           AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.ATA_AI_PROVIDER || 'openai' }}"
           TEST_TYPES="${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }}"
           MAX_ITERATIONS="${{ github.event.inputs.max-iterations || vars.ATA_MAX_ITERATIONS || '3' }}"
+          EXECUTION_TIMEOUT_MINUTES="${{ github.event.inputs.execution-timeout-minutes || vars.ATA_EXECUTION_TIMEOUT_MINUTES || '180' }}"
           SUB_AGENT_MAX_ITERATIONS="${{ github.event.inputs.sub-agent-max-iterations || vars.ATA_SUB_AGENT_MAX_ITERATIONS || '5' }}"
           COVERAGE_THRESHOLD="${{ github.event.inputs.coverage-threshold || vars.ATA_COVERAGE_THRESHOLD || '95' }}"
           APP_URL="${{ github.event.inputs.app-url || vars.ATA_APP_URL || '' }}"
@@ -210,6 +215,7 @@ jobs:
           esac
 
           validate_numeric_range "$MAX_ITERATIONS" 1 10 "max-iterations"
+          validate_numeric_range "$EXECUTION_TIMEOUT_MINUTES" 30 360 "execution-timeout-minutes"
           validate_numeric_range "$SUB_AGENT_MAX_ITERATIONS" 1 15 "sub-agent-max-iterations"
           validate_numeric_range "$COVERAGE_THRESHOLD" 1 100 "coverage-threshold"
 
@@ -254,7 +260,8 @@ jobs:
 
           FULL_IMAGE="ignis-local:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           CONTAINER_NAME="ignis-agent-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          EXECUTION_TIMEOUT_SECONDS=3600
+          EXECUTION_TIMEOUT_MINUTES="${{ github.event.inputs.execution-timeout-minutes || vars.ATA_EXECUTION_TIMEOUT_MINUTES || '180' }}"
+          EXECUTION_TIMEOUT_SECONDS=$((EXECUTION_TIMEOUT_MINUTES * 60))
 
           BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
           AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.ATA_AI_PROVIDER || 'openai' }}"
@@ -274,6 +281,7 @@ jobs:
           echo "🤖 AI Provider:  ${AI_PROVIDER}"
           echo "🧪 Test Types:   ${TEST_TYPES}"
           echo "🔄 Iterations:   ${MAX_ITERATIONS}"
+          echo "⏱️ Timeout:      ${EXECUTION_TIMEOUT_MINUTES} minute(s)"
           echo "🎯 Coverage:     ${COVERAGE_THRESHOLD}%"
           echo "📋 Run Mode:     ${RUN_MODE}"
           echo "🔧 Run Agent:    ${RUN_AGENT}"
@@ -290,6 +298,13 @@ jobs:
           rm -rf "${{ github.workspace }}/generated-tests" 2>/dev/null || true
           mkdir -p "${{ github.workspace }}/logs" "${{ github.workspace }}/test-results" "${{ github.workspace }}/generated-tests"
           echo "✅ Workspace prepared for current run"
+          echo ""
+
+          echo "🧬 Repository code provenance"
+          echo "   Commit: $(git -C "${{ github.workspace }}" rev-parse HEAD 2>/dev/null || echo unknown)"
+          if [ -f "${{ github.workspace }}/src/core/automation-test-pipeline.js" ]; then
+            echo "   Host file hash: $(sha256sum "${{ github.workspace }}/src/core/automation-test-pipeline.js" | awk '{print $1}')"
+          fi
           echo ""
           
           # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -324,6 +339,9 @@ jobs:
             -e APP_SECRETS="${{ secrets.ATA_APP_SECRETS || '' }}" \
             -e SKIP_PR="${{ github.event.inputs.skip-pr || 'false' }}" \
             -e LOG_LEVEL="${{ vars.ATA_LOG_LEVEL || 'info' }}" \
+            -e MAX_FAILURES_TO_ANALYZE="${{ vars.ATA_MAX_FAILURES_TO_ANALYZE || '30' }}" \
+            -e MAX_FAILURES_TO_FIX="${{ vars.ATA_MAX_FAILURES_TO_FIX || '24' }}" \
+            -e FIX_BATCH_SIZE="${{ vars.ATA_FIX_BATCH_SIZE || '8' }}" \
             -e NODE_ENV="production" \
             -e HEADLESS="true" \
             -e CI="true" \
@@ -349,6 +367,8 @@ jobs:
           else
             CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' "${CONTAINER_NAME}" 2>/dev/null || echo "unknown")
             echo "📊 Container status: ${CONTAINER_STATUS}"
+            echo "🧬 Container file hashes (host mount vs baked image):"
+            docker exec "${CONTAINER_NAME}" sh -lc 'if [ -f /workspace/src/core/automation-test-pipeline.js ]; then echo "   /workspace hash: $(sha256sum /workspace/src/core/automation-test-pipeline.js | awk '\''{print $1}'\'')"; else echo "   /workspace hash: MISSING"; fi; if [ -f /app/src/core/automation-test-pipeline.js ]; then echo "   /app hash:       $(sha256sum /app/src/core/automation-test-pipeline.js | awk '\''{print $1}'\'')"; else echo "   /app hash:       MISSING"; fi' || true
             echo ""
             
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -658,6 +678,7 @@ jobs:
           echo "| Run Agent | ${{ github.event.inputs.run-agent || 'N/A (full pipeline)' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Coverage Threshold | ${{ github.event.inputs.coverage-threshold || vars.ATA_COVERAGE_THRESHOLD || '95' }}% |" >> $GITHUB_STEP_SUMMARY
           echo "| Max Main Iterations | ${{ github.event.inputs.max-iterations || vars.ATA_MAX_ITERATIONS || '3' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Execution Timeout | ${{ github.event.inputs.execution-timeout-minutes || vars.ATA_EXECUTION_TIMEOUT_MINUTES || '180' }} min |" >> $GITHUB_STEP_SUMMARY
           echo "| Sub-Agent Max Iterations | ${{ github.event.inputs.sub-agent-max-iterations || vars.ATA_SUB_AGENT_MAX_ITERATIONS || '5' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Test Types | ${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Branch | ${{ github.event.inputs.branch || github.ref_name }} |" >> $GITHUB_STEP_SUMMARY

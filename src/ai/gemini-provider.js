@@ -109,6 +109,10 @@ class GeminiProvider extends BaseAIProvider {
       instructions += `\n\n⚠️ CRITICAL: EXISTING TESTS DETECTED — DO NOT REWRITE FROM SCRATCH!\n`;
       instructions += `There are ${analysisResult.existingTestContext.totalExistingTests} existing test file(s).\n`;
       instructions += `${analysisResult.existingTestContext.instruction}\n`;
+      if (analysisResult.existingTestContext.coverageSummary) {
+        instructions += `CURRENT COVERAGE BASELINE: ${analysisResult.existingTestContext.coverageSummary}\n`;
+        instructions += `Do NOT generate tests for types already at full coverage.\n`;
+      }
       instructions += `Existing files: ${analysisResult.existingTestContext.existingFiles.join(', ')}\n`;
       instructions += `Generate ONLY NEW test cases for uncovered scenarios, edge cases, and NFR.\n`;
     }

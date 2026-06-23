@@ -23,10 +23,16 @@ class TestGenerator {
     const outputDir = path.join(workDir, 'generated-tests');
     fs.mkdirSync(outputDir, { recursive: true });
 
-    // Store documentation and existing tests context for use during generation
+    // Store documentation, existing tests, and baseline coverage for use during generation
     this._appDocumentation = options.appDocumentation || null;
     this._existingTests = options.existingTests || null;
+    this._baselineCoverage = options.baselineCoverage || null;
     this._workDir = workDir;
+
+    // Log token-saving context being passed to AI
+    if (this._baselineCoverage) {
+      const t = this._baselineCoverage._totals || {};
+      logger.info(`\ud83d\udcb0 Token-saving: passing ${t.files || 0} existing file(s) / ${t.cases || 0} case(s) as context to suppress duplicate generation`);\n    }
 
     const generated = {};
 
@@ -1151,11 +1157,21 @@ module.exports = {
 
     if (Object.keys(existingTestContent).length === 0) return null;
 
+    // Attach baseline coverage summary so AI knows exact counts per type (saves tokens
+    // by preventing speculative re-generation of already-covered scenarios)
+    const coverageSummary = this._baselineCoverage
+      ? Object.entries(this._baselineCoverage)
+          .filter(([k]) => k !== '_totals')
+          .map(([k, v]) => `${k}: ${v.files} file(s), ${v.cases} case(s)`)
+          .join(' | ')
+      : null;
+
     return {
       existingFiles: Object.keys(existingTestContent),
       existingTestCode: existingTestContent,
       totalExistingTests: existingTestFiles.length,
       generatedTestCount: generatedFiles.length,
+      coverageSummary,
       instruction: generatedFiles.length > 0
         ? 'EXTEND the existing generated tests — do NOT regenerate tests for scenarios already covered. Add ONLY NEW test cases for uncovered scenarios, edge cases, and NFR. Maintain the same code style and patterns.'
         : 'EXTEND these existing tests — do NOT rewrite from scratch. Add new test cases for uncovered scenarios, edge cases, and NFR. Maintain the same code style, patterns, and conventions used in existing tests.'

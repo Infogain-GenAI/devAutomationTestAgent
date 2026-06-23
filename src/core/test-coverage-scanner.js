@@ -150,6 +150,50 @@ class TestCoverageScanner {
   }
 
   /**
+   * Compute a lightweight baseline coverage snapshot BEFORE tests run.
+   * Counts existing test files and test cases by type without executing Jest/Playwright.
+   * This is cheap (file-system only) so it runs before any AI calls.
+   */
+  computeBaselineCoverage(existingTests) {
+    const snapshot = {};
+    let totalFiles = 0;
+    let totalCases = 0;
+
+    for (const [type, tests] of Object.entries(existingTests)) {
+      const files = tests.length;
+      const cases = tests.reduce((sum, t) => sum + (t.testCount || 0), 0);
+      totalFiles += files;
+      totalCases += cases;
+      snapshot[type] = { files, cases };
+    }
+
+    snapshot._totals = { files: totalFiles, cases: totalCases };
+    return snapshot;
+  }
+
+  /**
+   * Log a before/after coverage comparison table.
+   * @param {object} before  - snapshot from computeBaselineCoverage()
+   * @param {object} after   - snapshot from computeBaselineCoverage() after generation
+   * @param {string} label   - e.g. 'PRE-RUN' or 'POST-RUN'
+   */
+  logCoverageTable(snapshot, label = '') {
+    const prefix = label ? `[${label}] ` : '';
+    logger.info(`${prefix}═══════════════════════════════════════════════════`);
+    logger.info(`${prefix}  TEST COVERAGE SNAPSHOT`);
+    logger.info(`${prefix}  ${'Type'.padEnd(14)} ${'Files'.padStart(6)} ${'Cases'.padStart(7)}`);
+    logger.info(`${prefix}  ${'─'.repeat(30)}`);
+    for (const [type, data] of Object.entries(snapshot)) {
+      if (type === '_totals') continue;
+      logger.info(`${prefix}  ${type.padEnd(14)} ${String(data.files).padStart(6)} ${String(data.cases).padStart(7)}`);
+    }
+    const t = snapshot._totals || { files: 0, cases: 0 };
+    logger.info(`${prefix}  ${'─'.repeat(30)}`);
+    logger.info(`${prefix}  ${'TOTAL'.padEnd(14)} ${String(t.files).padStart(6)} ${String(t.cases).padStart(7)}`);
+    logger.info(`${prefix}═══════════════════════════════════════════════════`);
+  }
+
+  /**
    * Filter test types to only generate missing tests
    */
   filterTestTypesToGenerate(requestedTypes, existingTests, gaps) {

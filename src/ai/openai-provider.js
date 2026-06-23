@@ -246,7 +246,10 @@ BUSINESS RULES TO VALIDATE — ensure tests cover these:
 ⚠️ CRITICAL: EXISTING TESTS DETECTED — DO NOT REWRITE FROM SCRATCH!
 There are ${analysisResult.existingTestContext.totalExistingTests} existing test file(s).
 ${analysisResult.existingTestContext.instruction}
-
+${analysisResult.existingTestContext.coverageSummary ? `
+CURRENT COVERAGE BASELINE: ${analysisResult.existingTestContext.coverageSummary}
+Do NOT generate tests for types already at full coverage above.
+` : ''}
 Existing test files:
 ${analysisResult.existingTestContext.existingFiles.map(f => `- ${f}`).join('\n')}
 

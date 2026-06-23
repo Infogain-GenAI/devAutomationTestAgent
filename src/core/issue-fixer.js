@@ -18,11 +18,24 @@ class IssueFixer {
 
     // Categorize failures
     const categorized = TestRunner.categorizeFailures(testResults.failures);
+    const maxFailuresToAnalyze = Number.isFinite(parseInt(process.env.MAX_FAILURES_TO_ANALYZE, 10))
+      ? parseInt(process.env.MAX_FAILURES_TO_ANALYZE, 10)
+      : 30;
+    const failuresForAnalysis = categorized.length > maxFailuresToAnalyze
+      ? categorized.slice(0, maxFailuresToAnalyze)
+      : categorized;
+
+    if (failuresForAnalysis.length < categorized.length) {
+      logger.warn(
+        `Failure set too large (${categorized.length}). Limiting analysis to first ${failuresForAnalysis.length} failures. ` +
+        'Use MAX_FAILURES_TO_ANALYZE to adjust.'
+      );
+    }
 
     // Gather source code for the failing files (deduplicated)
     const sourceCode = {};
     const uniqueFiles = new Set();
-    for (const failure of categorized) {
+    for (const failure of failuresForAnalysis) {
       if (!failure.file || uniqueFiles.has(failure.file)) continue;
       uniqueFiles.add(failure.file);
       
@@ -58,16 +71,16 @@ class IssueFixer {
     }
 
     // Estimate content size to decide whether to chunk
-    const estimatedSize = JSON.stringify({ failures: categorized, sourceCode }).length;
+    const estimatedSize = JSON.stringify({ failures: failuresForAnalysis, sourceCode }).length;
     const CHUNK_THRESHOLD = 100000; // 100k chars — below OpenAI's 120k limit with headroom
 
-    if (estimatedSize <= CHUNK_THRESHOLD || categorized.length <= 10) {
+    if (estimatedSize <= CHUNK_THRESHOLD || failuresForAnalysis.length <= 10) {
       // Small enough — single analysis call
       const failureAnalysis = await this.aiProvider.analyzeFailures(
-        { failures: categorized, passCount: testResults.passed, failCount: testResults.failed },
+        { failures: failuresForAnalysis, passCount: testResults.passed, failCount: testResults.failed },
         sourceCode
       );
-      return { failures: categorized, analysis: failureAnalysis, sourceCode };
+      return { failures: failuresForAnalysis, analysis: failureAnalysis, sourceCode };
     }
 
     // ── Chunked analysis: split failures into manageable batches ──
@@ -75,7 +88,7 @@ class IssueFixer {
     
     // Group failures by file to keep related failures together
     const failuresByFile = new Map();
-    for (const failure of categorized) {
+    for (const failure of failuresForAnalysis) {
       const key = failure.file || 'unknown';
       if (!failuresByFile.has(key)) failuresByFile.set(key, []);
       failuresByFile.get(key).push(failure);
@@ -116,7 +129,7 @@ class IssueFixer {
       }
     }
 
-    logger.info(`Split ${categorized.length} failures into ${chunks.length} chunk(s)`);
+    logger.info(`Split ${failuresForAnalysis.length} failures into ${chunks.length} chunk(s)`);
 
     // Process each chunk and merge results
     const allAnalysisResults = [];
@@ -139,7 +152,7 @@ class IssueFixer {
     const mergedAnalysis = this._mergeChunkedAnalysis(allAnalysisResults);
 
     return {
-      failures: categorized,
+      failures: failuresForAnalysis,
       analysis: mergedAnalysis,
       sourceCode
     };
@@ -452,13 +465,29 @@ class IssueFixer {
    * Generate fixes in chunks when there are too many failures for a single AI call.
    */
   async _generateFixesInChunks(analysis, sourceCode, failures) {
-    const BATCH_SIZE = 10;
+    const batchSize = Number.isFinite(parseInt(process.env.FIX_BATCH_SIZE, 10))
+      ? parseInt(process.env.FIX_BATCH_SIZE, 10)
+      : 8;
+    const maxFailuresToFix = Number.isFinite(parseInt(process.env.MAX_FAILURES_TO_FIX, 10))
+      ? parseInt(process.env.MAX_FAILURES_TO_FIX, 10)
+      : 24;
+    const failuresForFixing = failures.length > maxFailuresToFix
+      ? failures.slice(0, maxFailuresToFix)
+      : failures;
+
+    if (failuresForFixing.length < failures.length) {
+      logger.warn(
+        `Skipping ${failures.length - failuresForFixing.length} lower-priority failures in this pass to control runtime. ` +
+        'Use MAX_FAILURES_TO_FIX to adjust.'
+      );
+    }
+
     const allFixes = [];
     
-    for (let i = 0; i < failures.length; i += BATCH_SIZE) {
-      const batch = failures.slice(i, i + BATCH_SIZE);
-      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-      const totalBatches = Math.ceil(failures.length / BATCH_SIZE);
+    for (let i = 0; i < failuresForFixing.length; i += batchSize) {
+      const batch = failuresForFixing.slice(i, i + batchSize);
+      const batchNum = Math.floor(i / batchSize) + 1;
+      const totalBatches = Math.ceil(failuresForFixing.length / batchSize);
       
       logger.info(`Generating fixes batch ${batchNum}/${totalBatches} (${batch.length} failures)...`);
 

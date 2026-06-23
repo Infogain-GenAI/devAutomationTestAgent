@@ -155,7 +155,10 @@ class KnowledgeBaseManager {
   }
 
   /**
-   * Update KB with new analysis results (partial update)
+   * Update KB with new analysis results.
+   * When source is 'cache', only the fields that were explicitly provided are
+   * overwritten — everything else is preserved from the existing cache files.
+   * This ensures we never discard a valid knowledge base entry on a cache-hit run.
    */
   async updateKB(workDir, analysisResults) {
     try {
@@ -168,8 +171,20 @@ class KnowledgeBaseManager {
       }
 
       // Determine if this is a partial update or full update
+      // On cache-hit runs the orchestrator does NOT pass analysisResults (or passes only
+      // a subset), so we treat any run that loaded from cache as a partial update.
       const isPartialUpdate = this.kbSource === 'cache';
       const estimatedTokens = isPartialUpdate ? 2000 : 25000;
+
+      if (isPartialUpdate) {
+        // Only write fields that were explicitly provided — keep the rest as-is.
+        const provided = Object.keys(analysisResults || {});
+        if (provided.length === 0) {
+          logger.info('[KB] Cache-hit run: nothing new to write — KB unchanged');
+          return this.metadata;
+        }
+        logger.info(`[KB] Partial update: refreshing [${provided.join(', ')}] only`);
+      }
 
       // Update metadata
       const currentHash = await this._computeProjectHash(workDir);

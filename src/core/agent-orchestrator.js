@@ -212,20 +212,27 @@ class AgentOrchestrator {
       const techStack = StackDetector.detect(workDir, runConfig.techStackOverride || {});
       logger.info(`Stack detected: ${JSON.stringify(techStack)}`);
 
-      // ── Step 6: Analyze codebase ────────────────────────────
-      logger.info('Starting code analysis...');
-      updateStatus('analyzing');
-      const codeAnalysis = await this.codeAnalyzer.analyze(workDir, techStack);
-      logger.info('✅ Code analysis complete');
+      // ── Step 6: Analyze codebase (skip if KB cache hit — saves tokens) ──
+      let codeAnalysis;
+      if (kbResult.source === 'cache' && kbResult.kb && kbResult.kb.codeAnalysis) {
+        codeAnalysis = kbResult.kb.codeAnalysis;
+        logger.info('✅ Code analysis restored from Knowledge Base cache (0 tokens used)');
+        logger.info(`   Skipped full AI analysis — reusing cached results from ${kbResult.kb.metadata?.lastUpdatedDate || 'previous run'}`);
+      } else {
+        logger.info('Starting code analysis...');
+        updateStatus('analyzing');
+        codeAnalysis = await this.codeAnalyzer.analyze(workDir, techStack);
+        logger.info('✅ Code analysis complete');
 
-      // ── Step 6 + 0.5: Update Knowledge Base ────────────────
-      logger.info('\n💾 Updating Knowledge Base cache...');
-      await this.kbManager.updateKB(workDir, {
-        techStack,
-        codeAnalysis,
-        apiDocumentation: codeAnalysis.apiDocumentation || {}
-      });
-      logger.info('✅ Knowledge Base updated for next run');
+        // ── Step 6 + 0.5: Update Knowledge Base (only after fresh analysis) ──
+        logger.info('\n💾 Updating Knowledge Base cache...');
+        await this.kbManager.updateKB(workDir, {
+          techStack,
+          codeAnalysis,
+          apiDocumentation: codeAnalysis.apiDocumentation || {}
+        });
+        logger.info('✅ Knowledge Base updated for next run');
+      }
 
       // ── Step 6a: Backend Validation (NEW) ───────────────────
       let backendValidation = null;
@@ -294,11 +301,16 @@ class AgentOrchestrator {
         logger.warn(`Documentation generation failed (non-fatal): ${docErr.message}`);
       }
 
-      // ── Step 6.5: Scan for Existing Tests ───────────────────
+      // ── Step 6.5: Scan for Existing Tests + Baseline Coverage ──
       logger.info('Scanning repository for existing test coverage...');
       updateStatus('scanning-tests');
       
       const existingTests = await this.testCoverageScanner.scanExistingTests(workDir);
+
+      // ── BASELINE: compute & log coverage BEFORE any test generation ──
+      const baselineCoverage = this.testCoverageScanner.computeBaselineCoverage(existingTests);
+      this.testCoverageScanner.logCoverageTable(baselineCoverage, 'PRE-RUN BASELINE');
+
       const testGaps = await this.testCoverageScanner.identifyTestGaps(workDir, codeAnalysis, existingTests);
       
       // Filter test types to only generate missing tests
@@ -313,7 +325,7 @@ class AgentOrchestrator {
             logger.info(`      → ${plan.targets.length} scenarios to cover`);
           }
         } else {
-          logger.info(`   ⏭️  ${type}: Skip (${plan.reason}, ${plan.existing} existing tests)`);
+          logger.info(`   ⏭️  ${type}: Skip — ${plan.existing} existing test(s) already cover this (${plan.reason})`);
         }
       });
       logger.info('');
@@ -346,11 +358,22 @@ class AgentOrchestrator {
       });
       
       const generated = typesToGenerate.length > 0 
-        ? await this.testGenerator.generateAll(workDir, codeAnalysis, typesToGenerate, techStack, gapsForGeneration, { appDocumentation, existingTests })
+        ? await this.testGenerator.generateAll(workDir, codeAnalysis, typesToGenerate, techStack, gapsForGeneration, { appDocumentation, existingTests, baselineCoverage })
         : {};
       
       logger.info('✅ Test generation complete');
-      logger.info(`Generated test files: ${Object.values(generated).reduce((sum, g) => sum + (g.files?.length || 0), 0)} total`);
+      const generatedCount = Object.values(generated).reduce((sum, g) => sum + (g.files?.length || 0), 0);
+      logger.info(`Generated test files: ${generatedCount} total`);
+
+      // ── POST-GENERATION: re-scan and log coverage delta ──
+      if (generatedCount > 0) {
+        const postGenTests = await this.testCoverageScanner.scanExistingTests(workDir);
+        const postGenCoverage = this.testCoverageScanner.computeBaselineCoverage(postGenTests);
+        this.testCoverageScanner.logCoverageTable(postGenCoverage, 'POST-GENERATION');
+        const addedFiles = (postGenCoverage._totals?.files || 0) - (baselineCoverage._totals?.files || 0);
+        const addedCases = (postGenCoverage._totals?.cases || 0) - (baselineCoverage._totals?.cases || 0);
+        logger.info(`📈 Coverage delta: +${addedFiles} file(s), +${addedCases} case(s) added by generation`);
+      }
 
       // ── Step 7a: Validate generated tests (syntax + dry run) ─
       const validationTestDir = path.join(workDir, 'generated-tests');
