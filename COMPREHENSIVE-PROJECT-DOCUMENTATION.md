@@ -50,6 +50,9 @@ The agent operates as a **GitHub Action** (primary mode), a **CLI tool**, or a *
 | Dual Test Pipeline | Unit tests (Jest) + Automation tests (Playwright E2E/API) |
 | 95% Coverage Target | Iterates until coverage threshold is met or max iterations reached |
 | Smart Test Gap Detection | Scans existing tests, generates only for uncovered areas |
+| Knowledge Base Caching | Reuses cached analysis on hash match, skips full re-analysis |
+| Baseline Coverage Snapshots | Logs pre-run and post-generation coverage deltas |
+| Two-Stage PR Strategy | Checkpoint PR after generation + final Complete ATA Report PR |
 | Backend Validation | Security, error handling, input validation checks on endpoints |
 | Auto App Startup | Detects and starts the target application automatically |
 | Docker Ready | Production-ready container with Playwright pre-installed |
@@ -136,6 +139,7 @@ devAutomationTestAgent/
 │   ├── core/                     # Core pipeline components
 │   │   ├── agent-orchestrator.js # Main orchestrator (entry point)
 │   │   ├── code-analyzer.js      # 3-layer code analysis
+│   │   ├── knowledge-base-manager.js    # Analysis cache + token/cost tracking
 │   │   ├── documentation-generator.js  # AI-powered doc generation
 │   │   ├── test-generator.js     # Test file generation engine
 │   │   ├── test-runner.js        # Playwright automation runner
@@ -395,9 +399,10 @@ This is activated by setting `CODE_GENERATION_CLAUDE_API_KEY`, enabling best-of-
 │  ┌─── REPOSITORY SETUP ────────────────────────────────────────────┐│
 │  │ 1. Clone repo or use local workspace                            ││
 │  │ 2. Create fix branch (ignis/fix-<uuid>)                         ││
-│  │ 3. Install project dependencies (npm/yarn/pnpm)                 ││
-│  │ 4. Install Playwright browsers (chromium)                       ││
-│  │ 5. Resolve environment variables (.env)                         ││
+│  │ 3. Load Knowledge Base cache (hash match -> reuse analysis)     ││
+│  │ 4. Install project dependencies (npm/yarn/pnpm)                 ││
+│  │ 5. Install Playwright browsers (chromium)                       ││
+│  │ 6. Resolve environment variables (.env)                         ││
 │  └─────────────────────────────────────────────────────────────────┘│
 │                              │                                       │
 │                              ▼                                       │
@@ -405,9 +410,14 @@ This is activated by setting `CODE_GENERATION_CLAUDE_API_KEY`, enabling best-of-
 │  │                                                                 ││
 │  │  Iteration 0:                                                   ││
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      ││
-│  │  │  Stack   │→ │  Code    │→ │   Doc    │→ │  Test    │      ││
-│  │  │Detection │  │ Analysis │  │Generation│  │Generation│      ││
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘      ││
+│  │  │  Stack   │→ │  Code    │→ │   Doc    │→ │ Baseline │      ││
+│  │  │Detection │  │ Analysis │  │Generation│  │Coverage  │      ││
+│  │  └──────────┘  └──────────┘  └──────────┘  └────┬─────┘      ││
+│  │                                                 ▼              ││
+│  │                                           ┌──────────┐         ││
+│  │                                           │  Test    │         ││
+│  │                                           │Generation│         ││
+│  │                                           └──────────┘         ││
 │  │                                                                 ││
 │  │  Iteration 1+:                                                  ││
 │  │  ┌──────────────┐  ┌──────────────────┐                       ││
@@ -454,10 +464,12 @@ This is activated by setting `CODE_GENERATION_CLAUDE_API_KEY`, enabling best-of-
 │                              ▼                                       │
 │  ┌─── POST-PIPELINE ───────────────────────────────────────────────┐│
 │  │ 1. Generate reports (JSON + summary)                            ││
-│  │ 2. Commit generated tests + fixes to branch                    ││
-│  │ 3. Create PR on GitHub (unless SKIP_PR=true)                   ││
-│  │ 4. Write GitHub Actions step summary                           ││
-│  │ 5. Upload artifacts (test-results/)                             ││
+│  │ 2. Commit generated tests + fixes to branch                     ││
+│  │ 3. Create checkpoint PR: "Analysis and Tests"                  ││
+│  │ 4. Continue execution/fix cycles + final reporting              ││
+│  │ 5. Create final PR: "Complete ATA Report"                      ││
+│  │ 6. Write GitHub Actions step summary                            ││
+│  │ 7. Upload artifacts (test-results/)                             ││
 │  └─────────────────────────────────────────────────────────────────┘│
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
@@ -471,6 +483,20 @@ This is activated by setting `CODE_GENERATION_CLAUDE_API_KEY`, enabling best-of-
 | `generation` | Only Generation Agent | `RUN_MODE=generation` or `RUN_AGENT=generation` |
 | `validation` | Only Validation Agent | `RUN_MODE=validation` or `RUN_AGENT=validation` |
 | `execution` | Only Execution Agent | `RUN_MODE=execution` or `RUN_AGENT=execution` |
+
+### Operational Changes (June 2026)
+
+1. Knowledge Base cache is now first-class in setup:
+  - On project hash match, cached code analysis is reused.
+  - Full analysis is skipped to save tokens and runtime.
+2. Coverage snapshots are logged before and after test generation:
+  - PRE-RUN BASELINE snapshot
+  - POST-GENERATION snapshot and delta (+files, +cases)
+3. Two-stage PR persistence strategy is active:
+  - Checkpoint PR: Analysis and Tests (created early)
+  - Final PR: Complete ATA Report (created at pipeline end)
+4. Failure-set guardrails reduce long-run stalls:
+  - Max failures analyzed per pass and max failures fixed per pass are capped via env vars.
 
 ---
 
@@ -505,6 +531,9 @@ This is activated by setting `CODE_GENERATION_CLAUDE_API_KEY`, enabling best-of-
 | `MAX_ITERATIONS` | `3` | Main pipeline iterations (full sub-agent cycle) |
 | `SUB_AGENT_MAX_ITERATIONS` | `5` | Max iterations per sub-agent |
 | `COVERAGE_THRESHOLD` | `95` | Target coverage percentage |
+| `MAX_FAILURES_TO_ANALYZE` | `30` | Runtime cap for failure analysis volume per pass |
+| `MAX_FAILURES_TO_FIX` | `24` | Runtime cap for failure fix generation volume per pass |
+| `FIX_BATCH_SIZE` | `8` | Batch size for fix generation when failures are large |
 | `RUN_MODE` | `full` | Execution mode: `full`, `generation`, `validation`, `execution` |
 | `RUN_AGENT` | — | Run single sub-agent: `generation`, `validation`, `execution` |
 | `AGENT_TIMEOUT_MINUTES` | `30` | Maximum runtime before timeout |
@@ -747,6 +776,7 @@ jobs:
 | `app-url` | No | — | Pre-deployed app URL |
 | `auto-start-app` | No | `true` | Auto-start target app |
 | `app-start-command` | No | — | Custom start command |
+| `execution-timeout-minutes` | No | `180` | Container runtime timeout before forced stop |
 | `tech-stack-override` | No | — | JSON tech stack override |
 | `app-secrets` | No | — | JSON env vars for the app |
 
@@ -782,6 +812,19 @@ docker run --rm ignis-test-agent:latest node scripts/diagnose-container.js
 - Non-root user: `pwuser` (security)
 - Health check: HTTP on port 4000
 - Size: ~1.5GB (Playwright + browsers)
+
+### 9.2.1 Target Repository Workflow Pattern (Important)
+
+When running IGNIS from a target repository workflow (for example, AutomationTestDemo), use two checkouts:
+
+1. Checkout target repository (code under test) into default workspace.
+2. Checkout IGNIS agent repository into a subfolder (for example, `.ignis-agent`) and build Docker from that path.
+
+This avoids the common error:
+
+- `failed to read dockerfile: open Dockerfile: no such file or directory`
+
+because the target repository often does not contain the IGNIS Dockerfile.
 
 ### 9.3 API Server Mode
 
@@ -1102,7 +1145,10 @@ Force detection with `TECH_STACK_OVERRIDE`:
 | Playwright timeout | App not running | Set `APP_URL` or enable `AUTO_START_APP` |
 | "Port already in use" | Previous run didn't clean up | Agent auto-kills; or manually: `lsof -i :3000` |
 | Low coverage on first run | Complex codebase | Increase `MAX_ITERATIONS` and `SUB_AGENT_MAX_ITERATIONS` |
+| Timeout with generated tests lost | PR only created at pipeline end | Ensure checkpoint PR flow is enabled (`Analysis and Tests` PR should appear early) |
+| Branch/PR not visible after long run | Timeout occurred before final PR stage | Check `logs/pr-info.txt` artifact and checkpoint PR creation logs |
 | Docker health check failing | Port mismatch | Ensure `PORT=4000` in Docker env |
+| `open Dockerfile: no such file or directory` | Docker build executed in target repo root | Build from checked-out IGNIS agent path (for example `.ignis-agent/`) |
 | Database connection failed | Optional feature | Agent runs without DB (logs warning) |
 
 ### Diagnostic Commands
