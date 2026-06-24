@@ -1611,6 +1611,7 @@ Provide the complete fixed code.`;
       };
 
       const maxMainIterations = this.config.agent.maxIterations;
+      let checkpointPrUrl = null;
 
       // ══ Main Iteration Loop ═══════════════════════════════════
       for (let mainIter = 0; mainIter < maxMainIterations; mainIter++) {
@@ -1665,6 +1666,19 @@ Provide the complete fixed code.`;
             );
           }
 
+          // Create an EARLY checkpoint PR once analysis + tests are ready.
+          // This preserves first-shot generation even if later execution/fix phases time out.
+          if (!checkpointPrUrl && runMode === 'full') {
+            const checkpointResult = await this._createAnalysisAndTestsCheckpointPR(
+              fixBranch,
+              baseBranch,
+              pipelineResults,
+              runConfig,
+              workDir
+            );
+            checkpointPrUrl = checkpointResult.prUrl || null;
+          }
+
           if (runMode === 'validation') break;
         }
 
@@ -1716,11 +1730,20 @@ Provide the complete fixed code.`;
 
       // ── Push & Create PR ──────────────────────────────────────
       updateStatus('creating-pr');
-      const prResult = await this._pushAndCreatePR(fixBranch, baseBranch, pipelineResults, runConfig);
+      const prResult = await this._pushAndCreatePR(
+        fixBranch,
+        baseBranch,
+        pipelineResults,
+        runConfig,
+        checkpointPrUrl,
+        workDir
+      );
 
       // ── Build Summary ─────────────────────────────────────────
       this.summary = this._buildPipelineSummary(pipelineResults, runMode, finalReport);
       this.summary.prUrl = prResult.prUrl || null;
+      this.summary.analysisAndTestsPrUrl = prResult.checkpointPrUrl || checkpointPrUrl || null;
+      this.summary.completeAtaReportPrUrl = prResult.finalPrUrl || null;
 
       // ── Aggregate & Log Token Usage ───────────────────────────
       this.summary.tokenUsage = this._aggregateTokenUsage();
@@ -1732,6 +1755,11 @@ Provide the complete fixed code.`;
       logger.info(`  PIPELINE COMPLETE — ${this.summary.status}`);
       logger.info(`  Unit Coverage: ${this.summary.unitCoverage}% | Automation Coverage: ${this.summary.automationCoverage}%`);
       logger.info(`  Target: ${this.config.agent.coverageThreshold}%`);
+      if (this.summary.analysisAndTestsPrUrl || this.summary.completeAtaReportPrUrl) {
+        logger.info('  PRs:');
+        if (this.summary.analysisAndTestsPrUrl) logger.info(`    Analysis and Tests: ${this.summary.analysisAndTestsPrUrl}`);
+        if (this.summary.completeAtaReportPrUrl) logger.info(`    Complete ATA Report: ${this.summary.completeAtaReportPrUrl}`);
+      }
       logger.info(`${'═'.repeat(70)}\n`);
 
       return this.summary;
@@ -1866,8 +1894,8 @@ Provide the complete fixed code.`;
    * @param {object} runConfig - Run configuration
    * @returns {object} - { prUrl, pushed }
    */
-  async _pushAndCreatePR(fixBranch, baseBranch, pipelineResults, runConfig) {
-    const result = { prUrl: null, pushed: false };
+  async _pushAndCreatePR(fixBranch, baseBranch, pipelineResults, runConfig, checkpointPrUrl = null, workDir = null) {
+    const result = { prUrl: null, pushed: false, checkpointPrUrl: checkpointPrUrl || null, finalPrUrl: null };
 
     // Skip if no GitHub token configured (local-only mode)
     if (!this.config.github.token) {
@@ -1900,41 +1928,136 @@ Provide the complete fixed code.`;
       return result;
     }
 
+    // Ensure checkpoint PR exists even if early checkpoint step was skipped.
+    if (!result.checkpointPrUrl) {
+      const checkpointResult = await this._createAnalysisAndTestsCheckpointPR(
+        fixBranch,
+        baseBranch,
+        pipelineResults,
+        runConfig,
+        workDir
+      );
+      result.checkpointPrUrl = checkpointResult.prUrl || null;
+    }
+
+    // Always create a second PR for final report on a separate branch.
     try {
-      // Build PR title based on results
-      const execResult = pipelineResults.execution?.result || {};
-      const allPassed = (execResult.unitTestResults?.failed || 0) === 0 &&
-                        (execResult.automationTestResults?.failed || 0) === 0;
-      const unitCoverage = execResult.unitCoverage || 0;
-      const automationCoverage = execResult.automationCoverage || 0;
-      const coverageMet = unitCoverage >= this.config.agent.coverageThreshold &&
-                          automationCoverage >= this.config.agent.coverageThreshold;
+      const finalBranch = `${fixBranch}-final`;
+      await this.repoManager.git.checkout(fixBranch);
+      await this.repoManager.git.checkoutLocalBranch(finalBranch);
+      await this.repoManager.pushBranch(finalBranch);
 
-      const title = allPassed && coverageMet
-        ? `✅ IGNIS: All tests passing — coverage ${unitCoverage}% unit / ${automationCoverage}% automation`
-        : allPassed
-          ? `⚠️ IGNIS: Tests passing — coverage below target (${unitCoverage}% / ${automationCoverage}%)`
-          : `⚠️ IGNIS: Partial — ${execResult.unitTestResults?.failed || 0} unit + ${execResult.automationTestResults?.failed || 0} automation failures`;
+      const finalPrBody = this._buildCompleteAtaPrBody(pipelineResults, runConfig);
+      const finalPr = await this.repoManager.createPR({
+        title: '📘 IGNIS: Complete ATA Report',
+        body: finalPrBody,
+        head: finalBranch,
+        base: baseBranch
+      });
 
-      // Build PR body
-      const prBody = this._buildSubAgentPrBody(pipelineResults, runConfig);
+      result.finalPrUrl = finalPr.html_url;
+      result.prUrl = finalPr.html_url;
+      logger.info(`✅ Complete ATA Report PR created: ${finalPr.html_url}`);
+      if (workDir) this._writePrInfo(workDir, 'Complete ATA Report', finalPr.html_url, finalBranch);
+    } catch (prErr) {
+      logger.error(`Failed to create Complete ATA Report PR: ${prErr.message}`);
+    }
 
-      // Create PR
+    return result;
+  }
+
+  /**
+   * Create the early checkpoint PR once analysis + tests are generated.
+   */
+  async _createAnalysisAndTestsCheckpointPR(fixBranch, baseBranch, pipelineResults, runConfig, workDir) {
+    const result = { prUrl: null };
+
+    if (!this.config.github.token || this.config.agent.skipPR) {
+      logger.info('ℹ️ Checkpoint PR skipped (token missing or skipPR enabled)');
+      return result;
+    }
+
+    try {
+      // Push current fix branch head so checkpoint artifacts are preserved remotely.
+      await this.repoManager.pushBranch(fixBranch);
+
+      const checkpointBody = this._buildAnalysisAndTestsPrBody(pipelineResults, runConfig);
       const pr = await this.repoManager.createPR({
-        title,
-        body: prBody,
+        title: '🧪 IGNIS: Analysis and Tests',
+        body: checkpointBody,
         head: fixBranch,
         base: baseBranch
       });
 
       result.prUrl = pr.html_url;
-      logger.info(`✅ PR created: ${pr.html_url}`);
-
-    } catch (prErr) {
-      logger.error(`Failed to create PR: ${prErr.message}`);
+      logger.info(`✅ Analysis and Tests PR created: ${pr.html_url}`);
+      if (workDir) this._writePrInfo(workDir, 'Analysis and Tests', pr.html_url, fixBranch);
+    } catch (err) {
+      // 422 can happen if PR already exists for this branch — not fatal.
+      logger.warn(`Analysis/Test checkpoint PR not created: ${err.message}`);
     }
 
     return result;
+  }
+
+  /**
+   * Build body for early checkpoint PR.
+   */
+  _buildAnalysisAndTestsPrBody(pipelineResults, runConfig) {
+    const lines = [
+      '## 🧪 Analysis and Tests (Checkpoint)',
+      '',
+      'This PR is created immediately after analysis and test generation/validation so first-shot artifacts are preserved.',
+      '',
+      '### Included in this checkpoint',
+      '- Code analysis output',
+      '- Generated test suites',
+      '- Validation-stage fixes (if any)',
+      '',
+      '### Why this checkpoint exists',
+      '- Prevent loss of generated artifacts if long execution/fix phases time out',
+      '- Provide early reviewability of generated tests',
+      '',
+      '---',
+      this._buildSubAgentPrBody(pipelineResults, runConfig)
+    ];
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Build body for final Complete ATA Report PR.
+   */
+  _buildCompleteAtaPrBody(pipelineResults, runConfig) {
+    const lines = [
+      '## 📘 Complete ATA Report',
+      '',
+      'This PR contains the final end-to-end results after execution, fixes, and reporting.',
+      '',
+      '### Scope',
+      '- Final execution outcomes',
+      '- Applied fixes across app/test code',
+      '- Final coverage and report artifacts',
+      '',
+      '---',
+      this._buildSubAgentPrBody(pipelineResults, runConfig)
+    ];
+    return lines.join('\n');
+  }
+
+  /**
+   * Persist PR info for workflow summary step.
+   */
+  _writePrInfo(workDir, label, url, branchName) {
+    try {
+      const logDir = path.join(workDir, 'logs');
+      fs.mkdirSync(logDir, { recursive: true });
+      const file = path.join(logDir, 'pr-info.txt');
+      const line = `${label}: ${url} (branch: ${branchName})\n`;
+      fs.appendFileSync(file, line, 'utf-8');
+    } catch (err) {
+      logger.warn(`Unable to write pr-info.txt: ${err.message}`);
+    }
   }
 
   /**
