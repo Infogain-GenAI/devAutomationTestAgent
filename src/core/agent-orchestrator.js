@@ -1591,6 +1591,14 @@ Provide the complete fixed code.`;
       const techStack = StackDetector.detect(workDir, runConfig.techStackOverride || {});
       logger.info(`Stack detected: ${JSON.stringify(techStack)}`);
 
+      // Knowledge Base check for sub-agent pipeline (same behavior as legacy path)
+      logger.info('\n🔍 Checking Knowledge Base cache...');
+      const kbResult = await this.kbManager.loadOrInitialize(workDir);
+      this.kbAnalytics = this.kbManager.getAnalytics();
+      if (kbResult.source === 'cache') {
+        logger.info('✅ Using cached knowledge base (sub-agent pipeline)');
+      }
+
       // Build shared context for sub-agents
       const testTypes = this.config.testing.types;
       const context = {
@@ -1600,7 +1608,8 @@ Provide the complete fixed code.`;
         runId: this.runId,
         repoPath: workDir,
         branch: runConfig.branch || this.config.agent.branch || 'main',
-        appUrl: null
+        appUrl: null,
+        kbResult
       };
 
       // Results tracking

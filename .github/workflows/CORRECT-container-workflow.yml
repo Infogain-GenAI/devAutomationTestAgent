@@ -302,7 +302,8 @@ jobs:
           rm -f "${{ github.workspace }}/logs"/*.json 2>/dev/null || true
           rm -f "${{ github.workspace }}/logs"/*.xml 2>/dev/null || true
           rm -f "${{ github.workspace }}/test-results"/*.json 2>/dev/null || true
-          rm -rf "${{ github.workspace }}/generated-tests" 2>/dev/null || true
+          # Preserve generated-tests to allow incremental regeneration and doc reuse
+          # across reruns on the same branch.
           mkdir -p "${{ github.workspace }}/logs" "${{ github.workspace }}/test-results" "${{ github.workspace }}/generated-tests"
           echo "✅ Workspace prepared for current run"
           echo ""

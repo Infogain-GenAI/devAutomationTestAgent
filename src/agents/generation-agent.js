@@ -45,32 +45,53 @@ class GenerationAgent extends BaseSubAgent {
    * Initial generation: full analysis pipeline + documentation + all test generation.
    */
   async _initialGeneration(context) {
-    const { workDir, techStack, testTypes } = context;
+    const { workDir, techStack, testTypes, kbResult } = context;
     const artifacts = [];
     const issues = [];
 
     // ── Phase 1: Code Analysis ──────────────────────────────────
     logger.info('[generation] Phase 1: Code Analysis');
     let codeAnalysis;
-    try {
-      codeAnalysis = await this.codeAnalyzer.analyze(workDir, techStack);
-      logger.info(`[generation] ✅ Code analysis complete — ${codeAnalysis.structure.stats.totalFiles} files scanned`);
-      artifacts.push({ type: 'analysis', path: null, description: 'Code analysis result' });
-    } catch (err) {
-      logger.error(`[generation] Code analysis failed: ${err.message}`);
-      throw err;
+    if (kbResult?.source === 'cache' && kbResult.kb?.codeAnalysis) {
+      codeAnalysis = kbResult.kb.codeAnalysis;
+      logger.info('[generation] ✅ Reused code analysis from Knowledge Base cache');
+      artifacts.push({ type: 'analysis', path: null, description: 'Code analysis result (cached)' });
+    } else {
+      try {
+        codeAnalysis = await this.codeAnalyzer.analyze(workDir, techStack);
+        logger.info(`[generation] ✅ Code analysis complete — ${codeAnalysis.structure.stats.totalFiles} files scanned`);
+        artifacts.push({ type: 'analysis', path: null, description: 'Code analysis result' });
+      } catch (err) {
+        logger.error(`[generation] Code analysis failed: ${err.message}`);
+        throw err;
+      }
     }
 
     // ── Phase 2: Documentation Generation ───────────────────────
     logger.info('[generation] Phase 2: Documentation Generation');
     let appDocumentation = null;
     try {
-      const docResult = await this.documentationGenerator.generateDocumentation(
-        workDir, codeAnalysis, techStack
-      );
-      appDocumentation = docResult.documentation;
-      artifacts.push({ type: 'documentation', path: docResult.filePath, description: 'Application documentation' });
-      logger.info(`[generation] ✅ Documentation generated — ${appDocumentation.features.length} features, ${appDocumentation.apiEndpoints.length} endpoints`);
+      const existingDocJson = path.join(workDir, 'generated-tests', 'application-documentation.json');
+      const existingDocMd = path.join(workDir, 'generated-tests', 'APPLICATION-DOCUMENTATION.md');
+      const forceRegenDocs = process.env.FORCE_REGENERATE_DOCS === 'true';
+
+      if (!forceRegenDocs && fs.existsSync(existingDocJson)) {
+        appDocumentation = JSON.parse(fs.readFileSync(existingDocJson, 'utf-8'));
+        artifacts.push({ type: 'documentation', path: existingDocJson, description: 'Application documentation (reused)' });
+        logger.info('[generation] ✅ Reusing existing application-documentation.json (skipped regeneration)');
+      } else if (!forceRegenDocs && fs.existsSync(existingDocMd)) {
+        artifacts.push({ type: 'documentation', path: existingDocMd, description: 'Application documentation (reused markdown)' });
+        logger.info('[generation] ✅ Reusing existing APPLICATION-DOCUMENTATION.md (skipped regeneration)');
+      } else {
+        const docResult = await this.documentationGenerator.generateDocumentation(
+          workDir, codeAnalysis, techStack
+        );
+        appDocumentation = docResult.documentation;
+        artifacts.push({ type: 'documentation', path: docResult.filePath, description: 'Application documentation' });
+        const featureCount = Array.isArray(appDocumentation?.features) ? appDocumentation.features.length : 0;
+        const endpointCount = Array.isArray(appDocumentation?.apiEndpoints) ? appDocumentation.apiEndpoints.length : 0;
+        logger.info(`[generation] ✅ Documentation generated — ${featureCount} features, ${endpointCount} endpoints`);
+      }
     } catch (err) {
       logger.warn(`[generation] Documentation generation failed (non-fatal): ${err.message}`);
       issues.push({ phase: 'documentation', error: err.message });

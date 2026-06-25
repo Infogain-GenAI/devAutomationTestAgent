@@ -19,7 +19,10 @@ const AICostCalculator = require('../utils/ai-cost-calculator');
 class KnowledgeBaseManager {
   constructor(config) {
     this.config = config;
-    this.kbDir = path.join(config.app.workDir || '.', '.ignis-kb');
+    // kbDir must be resolved from the active target workspace for each run.
+    // Using process cwd can point to /app in containers, which is not persisted
+    // across workflow runs.
+    this.kbDir = null;
     this.metadata = null;
     this.kbSource = 'fresh'; // 'cache' | 'fresh' | 'partial-update'
     this.tokenUsage = {
@@ -45,6 +48,7 @@ class KnowledgeBaseManager {
    * Returns: { source: 'cache'|'fresh'|'partial-update', kbData: {...} }
    */
   async loadOrInitialize(workDir, codeAnalysis) {
+    this._setKbDir(workDir);
     logger.info('╔════════════════════════════════════════════════════════════╗');
     logger.info('║  KNOWLEDGE BASE MANAGER — Initialization                   ║');
     logger.info('╚════════════════════════════════════════════════════════════╝');
@@ -162,6 +166,7 @@ class KnowledgeBaseManager {
    */
   async updateKB(workDir, analysisResults) {
     try {
+      this._setKbDir(workDir);
       logger.info('\n╔════════════════════════════════════════════════════════════╗');
       logger.info('║  KNOWLEDGE BASE — Updating Cache                           ║');
       logger.info('╚════════════════════════════════════════════════════════════╝');
@@ -256,6 +261,16 @@ class KnowledgeBaseManager {
     } catch (err) {
       logger.warn(`[KB] Failed to update KB: ${err.message}`);
     }
+  }
+
+  _setKbDir(workDir) {
+    if (workDir && typeof workDir === 'string') {
+      this.kbDir = path.join(workDir, '.ignis-kb');
+      return;
+    }
+
+    // Fallback for non-standard invocations
+    this.kbDir = path.join(process.cwd(), '.ignis-kb');
   }
 
   /**
