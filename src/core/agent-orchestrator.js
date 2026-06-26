@@ -1987,7 +1987,54 @@ Provide the complete fixed code.`;
     }
 
     try {
-      // Push current fix branch head so checkpoint artifacts are preserved remotely.
+      // ── Commit all pending artifacts in typed batches before pushing ──
+      // This guarantees every artifact generated up to this point is included
+      // in the checkpoint PR commit history, even if agents did not explicitly
+      // commit them (e.g., KB cache files, leftover generated-tests writes).
+
+      if (workDir) {
+        const pending = await this.repoManager.getChangedFiles();
+        if (pending.length > 0) {
+          // Separate KB cache files (.ignis-kb/) from test/doc artifacts
+          const kbFiles     = pending.filter(f => f.startsWith('.ignis-kb/') || f.startsWith('.ignis-kb\\'));
+          const testFiles   = pending.filter(f => f.startsWith('generated-tests/') || f.startsWith('generated-tests\\'));
+          const reportFiles = pending.filter(f => f.startsWith('reports/') || f.endsWith('.md') || f.endsWith('.json'));
+          const rest        = pending.filter(f => !kbFiles.includes(f) && !testFiles.includes(f) && !reportFiles.includes(f));
+
+          if (kbFiles.length > 0) {
+            await this.repoManager.commitChanges(
+              'feat: IGNIS knowledge-base — cached analysis and KB artifacts',
+              kbFiles
+            );
+            logger.info(`[checkpoint] Committed ${kbFiles.length} KB cache file(s)`);
+          }
+          if (testFiles.length > 0) {
+            await this.repoManager.commitChanges(
+              'test: IGNIS generated-tests — analysis checkpoint test suite',
+              testFiles
+            );
+            logger.info(`[checkpoint] Committed ${testFiles.length} generated test file(s)`);
+          }
+          if (reportFiles.length > 0) {
+            await this.repoManager.commitChanges(
+              'docs: IGNIS analysis — documentation and report artifacts',
+              reportFiles
+            );
+            logger.info(`[checkpoint] Committed ${reportFiles.length} report/doc file(s)`);
+          }
+          if (rest.length > 0) {
+            await this.repoManager.commitChanges(
+              'chore: IGNIS checkpoint — remaining analysis artifacts',
+              rest
+            );
+            logger.info(`[checkpoint] Committed ${rest.length} other artifact(s)`);
+          }
+        } else {
+          logger.info('[checkpoint] All artifacts already committed — no pending changes');
+        }
+      }
+
+      // Push current fix branch so all committed artifacts reach the remote.
       await this.repoManager.pushBranch(fixBranch);
 
       const checkpointBody = this._buildAnalysisAndTestsPrBody(pipelineResults, runConfig);
