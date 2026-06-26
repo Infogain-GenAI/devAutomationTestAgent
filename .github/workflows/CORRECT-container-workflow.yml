@@ -132,7 +132,11 @@ on:
 jobs:
   run-automation-tests:
     runs-on: ubuntu-latest
-    
+    # Only run when triggered manually OR when the commit message contains Analyse_ATA
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, 'Analyse_ATA')
+
     # ============================================================================
     # PERMISSIONS CONFIGURATION
     # ============================================================================
@@ -158,18 +162,22 @@ jobs:
           repository: Infogain-GenAI/devAutomationTestAgent
           ref: main
           token: ${{ secrets.ATA_GITHUB_PAT || github.token }}
-          path: .ignis-agent
+          # ⚠️  IMPORTANT: checkout to runner.temp (OUTSIDE the workspace)
+          # Placing it inside the workspace makes git treat it as an untracked
+          # submodule, causing "No url found for submodule path" errors on push.
+          path: ${{ runner.temp }}/ignis-agent
 
       - name: Build IGNIS Agent Container Image (Playwright Base)
         run: |
           set -euo pipefail
           LOCAL_IMAGE="ignis-local:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          IGNIS_AGENT_DIR="${{ runner.temp }}/ignis-agent"
           
           echo "🐳 Building container image from Dockerfile"
           echo "   Base image: mcr.microsoft.com/playwright"
           echo "   Target image: ${LOCAL_IMAGE}"
-          echo "   Agent source: .ignis-agent/ (commit: $(git -C .ignis-agent rev-parse --short HEAD))"
-          docker build -t "${LOCAL_IMAGE}" .ignis-agent/
+          echo "   Agent source: ${IGNIS_AGENT_DIR} (commit: $(git -C "${IGNIS_AGENT_DIR}" rev-parse --short HEAD))"
+          docker build -t "${LOCAL_IMAGE}" "${IGNIS_AGENT_DIR}/"
           echo "✅ Image built successfully"
 
       - name: Validate Workflow Inputs
