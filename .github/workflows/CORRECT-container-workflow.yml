@@ -111,6 +111,7 @@ on:
 #   - ATA_TEST_TYPES          : Default test types (default: unit,e2e,api)
 #   - ATA_AUTO_START_APP      : Auto-start flag (default: true)
 #   - ATA_COVERAGE_THRESHOLD  : Target coverage % (default: 95)
+#   - ATA_TARGET_BRANCH       : Default branch under test (default: git ref branch)
 #   - ATA_MAX_ITERATIONS      : Max main pipeline iterations (default: 3)
 #   - ATA_SUB_AGENT_MAX_ITERATIONS : Max sub-agent iterations (default: 5)
 #   - ATA_APP_URL             : Target application URL (optional)
@@ -137,6 +138,11 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.head_commit.message, 'Analyse_ATA')
 
+    env:
+      # Single source of truth for branch under test.
+      # Priority: manual input -> repository variable -> git ref branch name.
+      TARGET_BRANCH: ${{ github.event.inputs.branch || vars.ATA_TARGET_BRANCH || github.ref_name }}
+
     # ============================================================================
     # PERMISSIONS CONFIGURATION
     # ============================================================================
@@ -152,7 +158,7 @@ jobs:
       - name: Checkout target repository (code under test)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.branch || github.ref }}
+          ref: ${{ env.TARGET_BRANCH }}
           token: ${{ secrets.ATA_GITHUB_PAT || github.token }}
           persist-credentials: false
 
@@ -184,7 +190,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+          BRANCH="${{ env.TARGET_BRANCH }}"
           AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.ATA_AI_PROVIDER || 'openai' }}"
           TEST_TYPES="${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }}"
           MAX_ITERATIONS="${{ github.event.inputs.max-iterations || vars.ATA_MAX_ITERATIONS || '3' }}"
@@ -278,7 +284,7 @@ jobs:
           EXECUTION_TIMEOUT_MINUTES="${{ github.event.inputs.execution-timeout-minutes || vars.ATA_EXECUTION_TIMEOUT_MINUTES || '180' }}"
           EXECUTION_TIMEOUT_SECONDS=$((EXECUTION_TIMEOUT_MINUTES * 60))
 
-          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+          BRANCH="${{ env.TARGET_BRANCH }}"
           AI_PROVIDER="${{ github.event.inputs.ai-provider || vars.ATA_AI_PROVIDER || 'openai' }}"
           TEST_TYPES="${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }}"
           MAX_ITERATIONS="${{ github.event.inputs.max-iterations || vars.ATA_MAX_ITERATIONS || '3' }}"
@@ -331,7 +337,7 @@ jobs:
             --name "${CONTAINER_NAME}" \
             -v "${{ github.workspace }}:/workspace" \
             -e REPO_PATH="/workspace" \
-            -e REPO_BRANCH="${{ github.event.inputs.branch || github.ref_name }}" \
+            -e REPO_BRANCH="${{ env.TARGET_BRANCH }}" \
             -e GITHUB_TOKEN="${{ secrets.ATA_GITHUB_PAT || github.token }}" \
             -e GITHUB_PAT="${{ secrets.ATA_GITHUB_PAT || '' }}" \
             -e GITHUB_WORKSPACE="/workspace" \
@@ -697,7 +703,7 @@ jobs:
           echo "| Execution Timeout | ${{ github.event.inputs.execution-timeout-minutes || vars.ATA_EXECUTION_TIMEOUT_MINUTES || '180' }} min |" >> $GITHUB_STEP_SUMMARY
           echo "| Sub-Agent Max Iterations | ${{ github.event.inputs.sub-agent-max-iterations || vars.ATA_SUB_AGENT_MAX_ITERATIONS || '5' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Test Types | ${{ github.event.inputs.test-types || vars.ATA_TEST_TYPES || 'unit,e2e,api' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Branch | ${{ github.event.inputs.branch || github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | ${{ env.TARGET_BRANCH }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Skip PR | ${{ github.event.inputs.skip-pr || 'false' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
