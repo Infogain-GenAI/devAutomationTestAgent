@@ -397,7 +397,16 @@ module.exports = defineConfig({
         // Write files
         for (const file of files) {
           if (!file || !file.path || !file.content) continue;
-          const filePath = path.join(outputDir, path.basename(file.path));
+
+          // Windows-safe filename sanitation for AI-provided paths.
+          let baseName = path.basename(file.path)
+            .replace(/[<>:"|?*\x00-\x1F]/g, '-')
+            .trim()
+            .replace(/[. ]+$/g, '');
+          if (!baseName) baseName = `generated-${i + 1}.spec.js`;
+          if (/\.(spec|test)\.$/i.test(baseName)) baseName = baseName.replace(/\.$/, '.js');
+
+          const filePath = path.join(outputDir, baseName);
           fs.writeFileSync(filePath, file.content, 'utf-8');
           allGeneratedFiles.push({ ...file, writtenPath: filePath });
         }

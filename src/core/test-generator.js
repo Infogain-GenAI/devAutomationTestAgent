@@ -11,6 +11,46 @@ class TestGenerator {
   }
 
   /**
+   * Sanitize AI-provided relative test file path so it is safe on Windows/Linux.
+   * Handles trailing dots/spaces, reserved device names, invalid chars and traversal.
+   */
+  _sanitizeGeneratedTestPath(rawPath) {
+    if (!rawPath || typeof rawPath !== 'string') return null;
+
+    // Normalize separators and remove obvious traversal/absolute prefixes.
+    let normalized = rawPath.replace(/\\/g, '/').replace(/\0/g, '');
+    normalized = normalized.replace(/^\/+/, '').replace(/\.\.(?:\/|$)/g, '');
+
+    let segments = normalized.split('/').filter(Boolean).map(seg => {
+      // Remove chars disallowed on Windows file systems and trim whitespace.
+      let clean = seg.replace(/[<>:"|?*\x00-\x1F]/g, '-').trim();
+      // Windows forbids trailing spaces and trailing dots in each path segment.
+      clean = clean.replace(/[. ]+$/g, '');
+      if (!clean) clean = 'unnamed';
+
+      // Avoid reserved Windows device names.
+      if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(clean)) {
+        clean = `_${clean}`;
+      }
+
+      return clean;
+    });
+
+    if (segments.length === 0) return null;
+
+    // Ensure file name ends with a valid JS/TS test extension.
+    let fileName = segments[segments.length - 1];
+    if (/\.(test|spec)\.$/i.test(fileName)) {
+      fileName = fileName.replace(/\.$/, '.js');
+    } else if (/\.(test|spec)$/i.test(fileName)) {
+      fileName = `${fileName}.js`;
+    }
+
+    segments[segments.length - 1] = fileName;
+    return segments.join('/');
+  }
+
+  /**
    * Generate tests for all enabled test types.
    * @param {string} workDir - Working directory
    * @param {object} analysisResult - Code analysis results
@@ -138,8 +178,12 @@ class TestGenerator {
     for (const file of allFiles) {
       if (!file.path || !file.content) continue;
 
-      // Sanitize file path to prevent directory traversal
-      const safePath = file.path.replace(/\.\./g, '').replace(/^\//, '');
+      // Sanitize file path to prevent traversal and Windows-invalid paths.
+      const safePath = this._sanitizeGeneratedTestPath(file.path);
+      if (!safePath) {
+        logger.warn(`Skipped invalid generated file path: ${String(file.path).slice(0, 120)}`);
+        continue;
+      }
       const fullPath = path.join(outputDir, safePath);
       const dir = path.dirname(fullPath);
 
