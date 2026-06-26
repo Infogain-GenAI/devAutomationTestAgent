@@ -168,21 +168,29 @@ jobs:
           repository: Infogain-GenAI/devAutomationTestAgent
           ref: main
           token: ${{ secrets.ATA_GITHUB_PAT || github.token }}
-          # ⚠️  IMPORTANT: checkout to runner.temp (OUTSIDE the workspace)
-          # Placing it inside the workspace makes git treat it as an untracked
-          # submodule, causing "No url found for submodule path" errors on push.
-          path: ${{ runner.temp }}/ignis-agent
+          # actions/checkout@v4 requires path to be inside GITHUB_WORKSPACE.
+          # We strip the nested .git immediately after checkout so the outer
+          # git never sees it as a submodule.
+          path: .ignis-agent
+
+      - name: Strip nested .git from IGNIS agent checkout
+        run: |
+          # Remove the nested .git so the outer repo never treats .ignis-agent
+          # as a submodule, which would cause "No url found for submodule path"
+          # errors when the container pushes the fix branch.
+          rm -rf "${{ github.workspace }}/.ignis-agent/.git"
+          echo "✅ Nested .git removed from .ignis-agent"
 
       - name: Build IGNIS Agent Container Image (Playwright Base)
         run: |
           set -euo pipefail
           LOCAL_IMAGE="ignis-local:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          IGNIS_AGENT_DIR="${{ runner.temp }}/ignis-agent"
+          IGNIS_AGENT_DIR="${{ github.workspace }}/.ignis-agent"
           
           echo "🐳 Building container image from Dockerfile"
           echo "   Base image: mcr.microsoft.com/playwright"
           echo "   Target image: ${LOCAL_IMAGE}"
-          echo "   Agent source: ${IGNIS_AGENT_DIR} (commit: $(git -C "${IGNIS_AGENT_DIR}" rev-parse --short HEAD))"
+          echo "   Agent source: ${IGNIS_AGENT_DIR}"
           docker build -t "${LOCAL_IMAGE}" "${IGNIS_AGENT_DIR}/"
           echo "✅ Image built successfully"
 
@@ -319,6 +327,13 @@ jobs:
           # Preserve generated-tests to allow incremental regeneration and doc reuse
           # across reruns on the same branch.
           mkdir -p "${{ github.workspace }}/logs" "${{ github.workspace }}/test-results" "${{ github.workspace }}/generated-tests"
+
+          # Ensure .ignis-agent is ignored by git inside the container so it is
+          # never staged or committed as part of the fix branch.
+          if ! grep -qxF '.ignis-agent' "${{ github.workspace }}/.gitignore" 2>/dev/null; then
+            echo '.ignis-agent' >> "${{ github.workspace }}/.gitignore"
+            echo "✅ Added .ignis-agent to .gitignore"
+          fi
           echo "✅ Workspace prepared for current run"
           echo ""
 
